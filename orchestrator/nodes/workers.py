@@ -202,9 +202,22 @@ async def workers_node(state: OrchestratorState) -> dict:
         if structured:
             agent_outputs[target_name] = structured
 
+    # 诊断日志：详细跟踪文件 ID 的传递状态
+    dify_file_uploader_output = agent_outputs.get("dify_file_uploader", {})
+    file_ids_found = []
+    if isinstance(dify_file_uploader_output, dict):
+        for uf in dify_file_uploader_output.get("uploaded_files", []):
+            if isinstance(uf, dict):
+                fid = uf.get("file_id") or uf.get("id")
+                if fid:
+                    file_ids_found.append(fid)
+    
     logger.info(
-        f"[Workers] 任务执行完毕。结果 keys: {list(results.keys())} | "
-        f"结构化 keys: {list(agent_outputs.keys())}"
+        f"[Workers] 任务执行完毕。\n"
+        f"  文本结果 keys: {list(results.keys())}\n"
+        f"  结构化输出 keys: {list(agent_outputs.keys())}\n"
+        f"  dify_file_uploader 输出是否存在: {'YES' if dify_file_uploader_output else 'NO'}\n"
+        f"  提取的 file_ids: {file_ids_found}"
     )
 
     return {"results": results, "_agent_outputs": agent_outputs}

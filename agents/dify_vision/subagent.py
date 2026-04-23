@@ -169,6 +169,15 @@ class DifyVisionAgent(DifySubAgent):
                 if fid and fid not in file_ids:
                     file_ids.append(fid)
 
+        # 诊断日志：跟踪上游文件 ID 是否正常传递
+        prior_structured_keys = list(context.get("prior_structured", {}).keys())
+        logger.info(
+            f"[DifyVision] 接收到的 context:\n"
+            f"  file_ids: {file_ids}\n"
+            f"  uploaded_files 数量: {len(context.get('uploaded_files', []))}\n"
+            f"  prior_structured keys: {prior_structured_keys}"
+        )
+
         if not file_ids:
             return {
                 "status": "error",

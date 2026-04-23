@@ -254,6 +254,7 @@ async def chat(request: ChatRequest):
         "available_agents": available_agents,
         "plan": {},
         "results": {},
+        "_agent_outputs": {},  # SubAgent 结构化输出 (含 file_id 等) 
         "iter": 0,
         "feedback_history": [],
         "eval_action": "",
@@ -367,6 +368,7 @@ async def chat_with_files(
         "available_agents": available_agents,
         "plan": {},
         "results": {},
+        "_agent_outputs": {},  # SubAgent 结构化输出 (含 file_id 等) — 关键修复
         "iter": 0,
         "feedback_history": [],
         "eval_action": "",
