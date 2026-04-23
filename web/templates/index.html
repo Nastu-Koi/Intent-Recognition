@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Intent-Recognition 多智能体编排系统 — 基于 LangGraph 的 Planner-Evaluator 架构">
+    <title>Intent-Recognition Agent</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <div class="logo-icon">🧠</div>
+                <div>
+                    <div class="header-title">Intent-Recognition</div>
+                    <div class="header-subtitle">Multi-Agent Orchestrator</div>
+                </div>
+            </div>
+            <div class="header-right">
+                <span class="status-badge online">
+                    <span class="status-dot"></span>
+                    Online
+                </span>
+                <select id="role-select" class="role-select" title="选择角色">
+                    <option value="">Loading...</option>
+                </select>
+                <button id="new-chat-btn" class="btn-icon" title="新对话">🔄</button>
+            </div>
+        </header>
+
+        <!-- Chat Area -->
+        <div id="chat-area" class="chat-area">
+            <div id="welcome-container" class="welcome-container">
+                <div class="welcome-icon">🧠</div>
+                <h1 class="welcome-title">Intent-Recognition Agent</h1>
+                <p class="welcome-desc">
+                    多智能体编排系统，基于 LangGraph Planner-Evaluator 架构。
+                    支持自然语言理解、文件分析、知识库检索等功能。
+                </p>
+                <div class="quick-actions">
+                    <button class="quick-action" onclick="quickAction('公司的报销流程是什么？')">📋 知识库问答</button>
+                    <button class="quick-action" onclick="quickAction('帮我总结一下这份文档的要点')">📝 文档总结</button>
+                    <button class="quick-action" onclick="quickAction('识别这张图片上的内容')">🖼️ 图片识别</button>
+                    <button class="quick-action" onclick="quickAction('你好，你能做什么？')">👋 打个招呼</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Input Area -->
+        <div class="input-area">
+            <div id="file-preview" class="file-preview"></div>
+            <div class="input-row">
+                <button id="upload-btn" class="btn-upload" title="上传文件">📎</button>
+                <div class="input-wrapper">
+                    <textarea id="chat-input" placeholder="输入问题或拖入文件..." rows="1"></textarea>
+                </div>
+                <button id="send-btn" class="btn-send" title="发送">➤</button>
+            </div>
+        </div>
+
+        <input type="file" id="file-input" multiple accept="image/*,.pdf,.doc,.docx,.txt,.md,.csv,.xlsx">
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,57 @@
+# dify_file_uploader Agent Card
+# 上传文件到 Dify，获取 file_id 供后续 Dify App 使用
+
+metadata:
+  agent_id: dify_file_uploader
+  name: Dify 文件上传器
+  description: "将本地文件上传到 Dify，获取 file_id。当用户提供了图片或文档，且后续流程需要 Dify file_id 时，应优先调用此 Agent。"
+  version: "1.0.0"
+  category: "file_management"
+  author: "System"
+
+capabilities:
+  skills:
+    - file_upload
+    - dify_file_id
+    - image_upload
+    - document_upload
+  keywords:
+    - 上传文件
+    - 上传图片
+    - 上传文档
+    - 获取file_id
+    - 文件ID
+    - dify上传
+  intent_patterns:
+    - upload_file
+    - 上传文件到dify
+    - 文件上传
+  confidence_threshold: 0.8
+  priority: 100  # 最高优先级，文件依赖任务必须先上传
+
+configuration:
+  max_iterations: 3
+  timeout: 120
+  max_input_length: 500
+  temperature: 0.0
+
+execution:
+  module: "agents.dify_file_uploader.subagent"
+  class_name: "DifyFileUploaderAgent"
+  mode: "sync"
+
+dependencies:
+  python_packages:
+    - requests
+  external_services:
+    - dify_api
+
+scope:
+  - 将本地文件路径上传到 Dify
+  - 获取 Dify file_id（供 dify_doc_summary / dify_vision 等 Agent 使用）
+  - 支持图片、PDF、Word、Excel 等常见格式
+
+examples:
+  - 请将这张图片上传到 Dify
+  - 帮我上传这份合同文档并获取 file_id
+  - 我需要把文件传到 Dify 以便进行后续分析

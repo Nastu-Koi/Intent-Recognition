@@ -1,0 +1,82 @@
+# dify_knowledge_qa Agent Card
+# 调用 Dify 知识库进行问答
+
+metadata:
+  agent_id: dify_knowledge_qa
+  name: Dify 知识库问答
+  description: "基于企业知识库回答专业领域问题，包括 HR 政策、财务制度、IT 规范、行政流程等内部知识。"
+  version: "1.0.0"
+  category: "knowledge_base"
+  author: "System"
+
+capabilities:
+  skills:
+    - knowledge_retrieval
+    - policy_qa
+    - hr_policy
+    - finance_policy
+    - it_policy
+    - admin_process
+    - faq
+  keywords:
+    - 政策
+    - 规定
+    - 制度
+    - 流程
+    - 报销
+    - 假期
+    - 福利
+    - 入职
+    - 离职
+    - IT
+    - 设备
+    - 采购
+    - 门卡
+    - 行政
+    - 餐补
+    - 差旅
+    - 发票
+    - 公积金
+    - 社保
+    - 绩效
+    - 考勤
+  intent_patterns:
+    - knowledge_qa
+    - policy_query
+    - 查询政策
+    - 规定是什么
+    - 怎么办理
+    - 流程是什么
+  confidence_threshold: 0.6
+  priority: 60
+
+configuration:
+  max_iterations: 5
+  timeout: 120
+  max_input_length: 10000
+  temperature: 0.5
+
+execution:
+  module: "agents.dify_knowledge_qa.subagent"
+  class_name: "DifyKnowledgeQAAgent"
+  mode: "sync"
+
+dependencies:
+  python_packages:
+    - requests
+  external_services:
+    - dify_api
+
+scope:
+  - HR 政策与福利查询
+  - 财务报销制度与流程
+  - IT 设备与系统使用规范
+  - 行政服务与办公设施
+  - 公司规章制度通用问答
+
+examples:
+  - 年假有多少天
+  - 报销上限是多少
+  - 如何申请笔记本电脑
+  - 新员工入职流程是什么
+  - 差旅补贴标准是什么

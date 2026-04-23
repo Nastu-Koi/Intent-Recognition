@@ -1,0 +1,70 @@
+# dify_vision Agent Card
+# 调用 Dify 图片识别能力
+
+metadata:
+  agent_id: dify_vision
+  name: Dify 图片识别
+  description: "调用 Dify Vision App 对图片进行内容识别、文字提取(OCR)、场景分析、发票/票据识别等视觉任务。需要图片已上传至 Dify（通过 dify_file_uploader 获取 file_id）。"
+  version: "1.0.0"
+  category: "vision"
+  author: "System"
+
+capabilities:
+  skills:
+    - image_recognition
+    - ocr
+    - invoice_recognition
+    - scene_analysis
+    - image_description
+    - text_extraction
+  keywords:
+    - 图片
+    - 图像
+    - 识别
+    - 看图
+    - OCR
+    - 文字识别
+    - 发票识别
+    - 票据
+    - 截图
+    - 照片
+    - 扫描
+    - 拍照
+  intent_patterns:
+    - image_recognition
+    - 识别图片
+    - 看这张图
+    - 图片内容是什么
+    - 帮我识别
+  confidence_threshold: 0.7
+  priority: 70
+
+configuration:
+  max_iterations: 3
+  timeout: 120
+  max_input_length: 5000
+  temperature: 0.3
+
+execution:
+  module: "agents.dify_vision.subagent"
+  class_name: "DifyVisionAgent"
+  mode: "sync"
+
+dependencies:
+  python_packages:
+    - requests
+  external_services:
+    - dify_api
+
+scope:
+  - 发票/收据 OCR 识别
+  - 图片内容描述与分析
+  - 场景理解与目标检测
+  - 截图文字提取
+  - 照片中的信息解读
+
+examples:
+  - 帮我识别这张发票上的金额
+  - 这张截图上写了什么
+  - 分析一下这张图片的内容
+  - 识别这份扫描件的文字

@@ -1,0 +1,9 @@
+agents:
+  - id: dify_file_uploader
+    card_url: "http://127.0.0.1:8101/.well-known/agent-card.json"
+  - id: dify_doc_summary
+    card_url: "http://127.0.0.1:8102/.well-known/agent-card.json"
+  - id: dify_knowledge_qa
+    card_url: "http://127.0.0.1:8103/.well-known/agent-card.json"
+  - id: dify_vision
+    card_url: "http://127.0.0.1:8104/.well-known/agent-card.json"

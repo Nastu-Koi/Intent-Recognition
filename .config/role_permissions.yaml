@@ -1,0 +1,44 @@
+# Role-Based Access Control Configuration
+# ============================================================
+# Defines which agents each role can access.
+# 
+# Structure:
+#   roles:
+#     role_id:
+#       name: Display name for the role
+#       description: Role description
+#       accessible_agents: [list of agent IDs]  # empty list = all agents
+#   default_role: Role to use if not specified in request (optional)
+#
+# Current Agents:
+#   - dify_file_uploader:   上传文件到 Dify
+#   - dify_doc_summary:     Dify 文档总结
+#   - dify_knowledge_qa:    Dify 知识库问答
+#   - dify_vision:          Dify 图片识别
+# ============================================================
+
+roles:
+  # Basic employee — can query knowledge base only
+  role_a:
+    name: "普通员工"
+    description: "基础员工，仅可访问知识库问答"
+    accessible_agents:
+      - dify_knowledge_qa
+
+  # Advanced employee — knowledge QA + document summary + file upload
+  role_b:
+    name: "高级员工"
+    description: "高级员工，可使用知识库问答、文档总结和文件上传"
+    accessible_agents:
+      - dify_knowledge_qa
+      - dify_doc_summary
+      - dify_file_uploader
+
+  # Admin — full access to all agents
+  role_admin:
+    name: "管理员"
+    description: "管理员，完整访问所有 Agent"
+    accessible_agents: []  # empty list = all agents are accessible
+
+# Default role to use if none is specified in the request
+default_role: role_admin

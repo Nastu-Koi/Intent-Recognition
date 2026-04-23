@@ -1,0 +1,64 @@
+# dify_doc_summary Agent Card
+# 通过 Dify Workflow 对文档进行总结
+
+metadata:
+  agent_id: dify_doc_summary
+  name: Dify 文档总结
+  description: "调用 Dify Workflow 对文档内容进行智能总结与摘要提取。支持长文本、报告、合同等文档类型的核心信息提炼。"
+  version: "1.0.0"
+  category: "document_processing"
+  author: "System"
+
+capabilities:
+  skills:
+    - document_summary
+    - text_summarization
+    - report_analysis
+    - contract_review
+    - key_points_extraction
+  keywords:
+    - 总结
+    - 摘要
+    - 归纳
+    - 提炼
+    - 核心要点
+    - 文档分析
+    - 合同审阅
+    - 报告总结
+    - 内容概括
+  intent_patterns:
+    - summarize_document
+    - 总结文档
+    - 提炼要点
+    - 文档摘要
+  confidence_threshold: 0.65
+  priority: 50
+
+configuration:
+  max_iterations: 5
+  timeout: 180
+  max_input_length: 50000
+  temperature: 0.3
+
+execution:
+  module: "agents.dify_doc_summary.subagent"
+  class_name: "DifyDocSummaryAgent"
+  mode: "sync"
+
+dependencies:
+  python_packages:
+    - requests
+  external_services:
+    - dify_api
+
+scope:
+  - 对长文档进行智能总结
+  - 提取核心要点与关键信息
+  - 支持报告、合同、会议纪要等文档格式
+  - 可结合 dify_file_uploader 处理已上传文件
+
+examples:
+  - 帮我总结这份合同的关键条款
+  - 这份季度报告的核心内容是什么
+  - 请提炼这篇文章的要点
+  - 把这份会议纪要总结一下
