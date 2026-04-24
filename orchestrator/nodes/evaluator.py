@@ -170,8 +170,6 @@ async def evaluator_node(state: OrchestratorState) -> dict:
             "eval_thought": eval_result.thought,
         }
 
-        # 累积思维链历史
-        thinking_chain = state.get("thinking_chain", [])
         current_thinking = {
             "iteration": current_iter,
             "plan_rationale": state.get("plan_rationale", ""),
@@ -179,8 +177,7 @@ async def evaluator_node(state: OrchestratorState) -> dict:
             "eval_thought": eval_result.thought,
             "agent_results": results,
         }
-        thinking_chain.append(current_thinking)
-        update["thinking_chain"] = thinking_chain
+        update["thinking_chain"] = [current_thinking]
 
         # 仅在 NEEDS_REVISION 时追加反馈到历史
         if eval_result.action == "NEEDS_REVISION" and eval_result.feedback:

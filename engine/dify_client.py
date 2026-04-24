@@ -83,15 +83,37 @@ class DifyClient:
         return response.json()
 
     def chat(self, query: str, inputs: dict[str, Any] | None = None, user: str = "intent-recognition") -> str:
+        # 从 inputs 中提取 file_ids 并构建 files 参数
+        files = []
+        processed_inputs = dict(inputs or {})
+        
+        # 支持 file_ids (列表) 或 file_id (单个)
+        file_ids = processed_inputs.pop("file_ids", []) or []
+        if processed_inputs.get("file_id") and "file_id" not in ["file_ids"]:
+            single_id = processed_inputs.pop("file_id", None)
+            if single_id and single_id not in file_ids:
+                file_ids.insert(0, single_id)
+        
+        # 将 file_ids 转换为 Dify 期望的 files 格式
+        if file_ids:
+            for fid in file_ids:
+                if isinstance(fid, str):
+                    # 默认当作 document，但更好的做法是让 dify_file_uploader 在 inputs 中标明类型
+                    files.append({
+                        "type": "document",
+                        "transfer_method": "local_file",
+                        "upload_file_id": fid,
+                    })
+        
         data = self._post(
             "/chat-messages",
             {
-                "inputs": inputs or {},
+                "inputs": processed_inputs,
                 "query": query,
                 "response_mode": "blocking",
                 "conversation_id": "",
                 "user": user,
-                "files": [],
+                "files": files,
             },
         )
         return data.get("answer") or data.get("text") or str(data)
@@ -99,13 +121,36 @@ class DifyClient:
     def workflow(self, query: str, inputs: dict[str, Any] | None = None, user: str = "intent-recognition") -> str:
         workflow_inputs = dict(inputs or {})
         workflow_inputs.setdefault("query", query)
+        
+        # 从 workflow_inputs 中提取 file_ids 并构建 files 参数
+        files = []
+        file_ids = workflow_inputs.pop("file_ids", []) or []
+        if workflow_inputs.get("file_id") and "file_id" not in ["file_ids"]:
+            single_id = workflow_inputs.pop("file_id", None)
+            if single_id and single_id not in file_ids:
+                file_ids.insert(0, single_id)
+        
+        # 将 file_ids 转换为 Dify 期望的 files 格式
+        if file_ids:
+            for fid in file_ids:
+                if isinstance(fid, str):
+                    files.append({
+                        "type": "document",
+                        "transfer_method": "local_file",
+                        "upload_file_id": fid,
+                    })
+        
+        payload = {
+            "inputs": workflow_inputs,
+            "response_mode": "blocking",
+            "user": user,
+        }
+        if files:
+            payload["files"] = files
+        
         data = self._post(
             "/workflows/run",
-            {
-                "inputs": workflow_inputs,
-                "response_mode": "blocking",
-                "user": user,
-            },
+            payload,
         )
         outputs = (data.get("data") or {}).get("outputs") or data.get("outputs") or {}
         if isinstance(outputs, dict):

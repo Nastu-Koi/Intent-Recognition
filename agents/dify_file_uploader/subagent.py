@@ -151,10 +151,13 @@ class DifyFileUploaderAgent(DifySubAgent):
             try:
                 result = upload_file_to_dify(fp, user=user)
                 file_id = result.get("id") or result.get("file_id", "")
+                file_name = result.get("name", Path(fp).name)
+                file_type_desc = "图片" if result.get("mime_type", "").startswith('image/') else "文档"
                 uploaded.append({
                     "file_path": fp,
                     "file_id": file_id,
-                    "file_name": result.get("name", Path(fp).name),
+                    "file_name": file_name,
+                    "file_type": file_type_desc,
                     "size": result.get("size", 0),
                     "mime_type": result.get("mime_type", ""),
                     "raw": result,
@@ -173,7 +176,8 @@ class DifyFileUploaderAgent(DifySubAgent):
 
         result_text = "文件上传完成。以下是 Dify file_id 映射：\n"
         for u in uploaded:
-            result_text += f"  - {u['file_name']} -> file_id: {u['file_id']}\n"
+            file_type_desc = "图片" if u['mime_type'].startswith('image/') else "文档"
+            result_text += f"  - {u['file_name']} ({file_type_desc}, size: {u['size']} bytes) -> file_id: {u['file_id']}\n"
         if errors:
             result_text += f"\n以下文件上传失败：\n"
             for e in errors:
