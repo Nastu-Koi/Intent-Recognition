@@ -88,11 +88,11 @@ class OrchestratorState(MessagesState):
 
     # 动态数据
     plan: Dict[str, Any]                                        # Planner 输出的任务计划
-    results: Annotated[Dict[str, Any], operator.ior]            # Workers 并发结果 (自动合并)
-    _agent_outputs: Annotated[Dict[str, Any], operator.ior]     # SubAgent 结构化输出 (含 file_id 等)
-    iter: Annotated[int, operator.add]                          # 当前迭代轮次 (自动累加)
-    feedback_history: Annotated[List[str], operator.add]         # 增量反馈历史 (自动追加)
+    results: Dict[str, Any]                                     # Workers 并发结果 (明确管理)
+    _agent_outputs: Dict[str, Any]                              # SubAgent 结构化输出
+    iter: int                                                   # 当前迭代轮次
+    feedback_history: List[str]                                 # 增量反馈历史
     eval_action: str                                            # Evaluator 的最新 action
     eval_thought: str                                           # Evaluator 的最新思考过程
     final_text: str                                             # Final_Reply 的输出
-    thinking_chain: Annotated[List[Dict[str, Any]], operator.add]  # 完整思维链历史
+    thinking_chain: List[Dict[str, Any]]                        # 完整思维链历史

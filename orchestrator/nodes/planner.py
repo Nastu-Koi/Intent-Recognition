@@ -197,7 +197,7 @@ async def planner_node(state: OrchestratorState) -> dict:
 
         return {
             "plan": plan_data,
-            "iter": 1
+            "iter": state.get("iter", 0) + 1
         }
 
     except Exception as e:

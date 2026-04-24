@@ -170,21 +170,23 @@ async def evaluator_node(state: OrchestratorState) -> dict:
             "eval_thought": eval_result.thought,
         }
 
+        # 累积思维链历史 (自行管理追加)
+        thinking_chain = list(state.get("thinking_chain") or [])
         current_thinking = {
             "iteration": current_iter,
             "plan_rationale": state.get("plan_rationale", ""),
             "eval_action": eval_result.action,
             "eval_thought": eval_result.thought,
-            "agent_results": results,
+            "agent_results": results.copy() if isinstance(results, dict) else results,
         }
-        update["thinking_chain"] = [current_thinking]
+        thinking_chain.append(current_thinking)
+        update["thinking_chain"] = thinking_chain
 
-        # 仅在 NEEDS_REVISION 时追加反馈到历史
+        # 仅在 NEEDS_REVISION 时追加反馈到历史 (自行管理追加)
+        feedback_history = list(state.get("feedback_history") or [])
         if eval_result.action == "NEEDS_REVISION" and eval_result.feedback:
-            update["feedback_history"] = [eval_result.feedback]
-        else:
-            # operator.add 需要一个空 list 来表示"不追加"
-            update["feedback_history"] = []
+            feedback_history.append(eval_result.feedback)
+        update["feedback_history"] = feedback_history
 
         return update
 
