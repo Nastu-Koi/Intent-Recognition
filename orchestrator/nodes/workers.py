@@ -176,7 +176,7 @@ async def workers_node(state: OrchestratorState) -> dict:
     agent_by_id = {agent["agent_id"]: agent for agent in available_agents}
 
     # 顺序执行任务，累积结构化输出以支持依赖
-    results = {}
+    results = current_results.copy()           # 初始化为上一次的累积文本结果
     agent_outputs = current_structured.copy()  # 初始化为上一次的累积输出
     for task in tasks:
         target = task.get("target", "")

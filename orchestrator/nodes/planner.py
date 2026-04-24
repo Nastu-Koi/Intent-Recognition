@@ -120,7 +120,13 @@ async def planner_node(state: OrchestratorState) -> dict:
             "1. **思维链分析 (Rationale)**: 在分发任务前，必须在 rationale 中分析：当前已知什么？还缺什么？哪些任务存在先后依赖关系？\n"
             "2. **有序性与数据依赖**: 如果任务 B 需要参考任务 A 的输出结果，则**严禁**在同一轮内同时调度 A 和 B。应在本轮只调度 A，等待下一轮拿到结果后再调度 B。\n"
             "3. **分步执行**: 宁愿多花几个轮次稳扎稳打，也不要尝试在单轮内并行调度具有因果逻辑的任务。\n"
-            "4. **文件处理优先**: 如果用户上传了文件且有 Agent 具备文件处理能力，优先调度文件处理 Agent。\n"
+            "4. **多文件处理与类型匹配**（关键）:\n"
+            "   - **第1轮**: 如果检测到多个文件，必须先调度 `dify_file_uploader` 一次性上传所有文件，获取 file_id 映射。\n"
+            "   - **后续轮次**: 根据文件类型分别调度对应 Agent：\n"
+            "     * 图片文件 (image/*.png/*.jpg etc) → 调度 `dify_vision` 进行图片识别和内容分析\n"
+            "     * 文档文件 (document/*.pdf etc) → 调度 `dify_doc_summary` 进行文档摘要和内容总结\n"
+            "   - **严格限制**: 切勿将图片传给 `dify_doc_summary`，也不要将 PDF 传给 `dify_vision`。\n"
+            "   - **示例**: 若同时上传了 PNG 和 PDF，第1轮上传，第2轮可并发调度 dify_vision(处理PNG) 和 dify_doc_summary(处理PDF)。\n"
             "5. **直接回复 (General Chat)**: 对于不涉及任何 Agent 能力范围的通用问题，**不要调度任何 Agent**。这类问题将由 Final Responder 直接根据对话历史回答。\n"
             "6. **背景注入**: 如果指派的任务依赖之前的结果，必须在指令中包含【背景参考】。\n"
             f"7. **合法 target**: target 字段只能使用以下 agent_id: {valid_agent_ids}\n\n"
@@ -191,7 +197,7 @@ async def planner_node(state: OrchestratorState) -> dict:
 
         return {
             "plan": plan_data,
-            "iter": 1
+            "iter": state.get("iter", 0) + 1
         }
 
     except Exception as e:
