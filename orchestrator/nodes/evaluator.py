@@ -174,7 +174,7 @@ async def evaluator_node(state: OrchestratorState) -> dict:
         thinking_chain = list(state.get("thinking_chain") or [])
         current_thinking = {
             "iteration": current_iter,
-            "plan_rationale": state.get("plan_rationale", ""),
+            "plan_rationale": state.get("plan", {}).get("rationale", ""),
             "eval_action": eval_result.action,
             "eval_thought": eval_result.thought,
             "agent_results": results.copy() if isinstance(results, dict) else results,
