@@ -117,6 +117,9 @@ def init_llm_model(config: Dict[str, Any]):
         temperature=temperature,
         max_tokens=max_tokens,
         timeout=timeout,
+        extra_body= {
+            "enable_thinking": False,
+        }
     )
 
     return model

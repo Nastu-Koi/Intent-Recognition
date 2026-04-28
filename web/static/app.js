@@ -16,11 +16,22 @@ const filePreview = document.getElementById('file-preview');
 const roleSelect = document.getElementById('role-select');
 const newChatBtn = document.getElementById('new-chat-btn');
 const welcomeContainer = document.getElementById('welcome-container');
+const sidebar = document.getElementById('sidebar');
+const toggleSidebarBtn = document.getElementById('toggle-sidebar-btn');
+const closeSidebarBtn = document.getElementById('close-sidebar-btn');
+const conversationList = document.getElementById('conversation-list');
+const sidebarNewChatBtn = document.getElementById('sidebar-new-chat-btn');
 
 // ─── Init ───
 document.addEventListener('DOMContentLoaded', () => {
     loadRoles();
+    loadConversations();
     chatInput.focus();
+
+    // Sidebar
+    if (toggleSidebarBtn) toggleSidebarBtn.onclick = () => sidebar.classList.toggle('hidden');
+    if (closeSidebarBtn) closeSidebarBtn.onclick = () => sidebar.classList.add('hidden');
+    if (sidebarNewChatBtn) sidebarNewChatBtn.onclick = startNewChat;
 });
 
 // ─── Load Roles ───
@@ -98,7 +109,9 @@ async function sendMessage() {
 
         // Update session
         if (result.session_id) {
+            const isNew = !sessionId;
             sessionId = result.session_id;
+            if (isNew) loadConversations(); // 第一次对话后刷新列表
         }
 
     } catch (e) {
@@ -207,7 +220,7 @@ function appendAgentMessage(text, result) {
             if (item.agent_results && Object.keys(item.agent_results).length > 0) {
                 html += `<div class="process-item"><div class="process-label">📊 Agent 结果</div>`;
                 for (const [k, v] of Object.entries(item.agent_results)) {
-                    html += `<div><strong>${escapeHtml(k)}</strong>: ${escapeHtml(String(v).substring(0, 300))}${String(v).length > 300 ? '...' : ''}</div>`;
+                    html += `<div><strong>${escapeHtml(k)}</strong>: ${escapeHtml(String(v))}</div>`;
                 }
                 html += `</div>`;
             }
@@ -320,8 +333,103 @@ chatInput.addEventListener('input', () => {
 
 sendBtn.addEventListener('click', sendMessage);
 
-// ─── New Chat ───
-newChatBtn.addEventListener('click', () => {
+// ─── Persistence Helpers ───
+
+async function loadConversations() {
+    try {
+        const res = await fetch(`${API_BASE}/conversations`);
+        const data = await res.json();
+        renderConversationList(data.conversations || []);
+    } catch (e) {
+        console.error('Failed to load conversations:', e);
+    }
+}
+
+function renderConversationList(conversations) {
+    if (!conversationList) return;
+    conversationList.innerHTML = '';
+    conversations.forEach(conv => {
+        const item = document.createElement('div');
+        item.className = `conversation-item ${conv.session_id === sessionId ? 'active' : ''}`;
+        item.dataset.id = conv.session_id;
+        
+        const info = document.createElement('div');
+        info.className = 'conv-info';
+        info.onclick = () => loadConversation(conv.session_id);
+        
+        const title = document.createElement('div');
+        title.className = 'conv-title';
+        title.textContent = conv.title || 'Untitled Chat';
+        
+        const meta = document.createElement('div');
+        meta.className = 'conv-meta';
+        const date = new Date(conv.updated_at).toLocaleDateString();
+        meta.textContent = `${date} · ${conv.message_count} msgs`;
+        
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn-delete-conv';
+        delBtn.innerHTML = '✕';
+        delBtn.onclick = (e) => {
+            e.stopPropagation();
+            if (confirm('Delete this conversation?')) {
+                deleteConversation(conv.session_id);
+            }
+        };
+        
+        info.appendChild(title);
+        info.appendChild(meta);
+        item.appendChild(info);
+        item.appendChild(delBtn);
+        conversationList.appendChild(item);
+    });
+}
+
+async function loadConversation(id) {
+    if (id === sessionId) return;
+    
+    sessionId = id;
+    chatArea.innerHTML = '';
+    if (welcomeContainer) welcomeContainer.style.display = 'none';
+    
+    document.querySelectorAll('.conversation-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.id === id);
+    });
+    
+    try {
+        const res = await fetch(`${API_BASE}/conversations/${id}/messages`);
+        const data = await res.json();
+        
+        // Restore messages
+        data.messages.forEach(msg => {
+            appendMessage(msg.role, msg.content);
+        });
+        
+        // Restore thinking chain for the last agent message
+        if (data.thinking_chain && data.thinking_chain.length > 0) {
+            const agentBubbles = chatArea.querySelectorAll('.message.agent .bubble');
+            if (agentBubbles.length > 0) {
+                const lastBubble = agentBubbles[agentBubbles.length - 1];
+                appendThinkingToBubble(lastBubble, data.thinking_chain);
+            }
+        }
+        
+    } catch (e) {
+        console.error('Failed to load conversation details:', e);
+        appendMessage('agent', `❌ Failed to load history: ${e.message}`);
+    }
+}
+
+async function deleteConversation(id) {
+    try {
+        await fetch(`${API_BASE}/conversations/${id}`, { method: 'DELETE' });
+        if (id === sessionId) startNewChat();
+        loadConversations();
+    } catch (e) {
+        console.error('Failed to delete conversation:', e);
+    }
+}
+
+function startNewChat() {
     sessionId = null;
     chatArea.innerHTML = '';
     if (welcomeContainer) {
@@ -334,7 +442,59 @@ newChatBtn.addEventListener('click', () => {
     filePreview.innerHTML = '';
     chatInput.value = '';
     chatInput.focus();
-});
+    
+    document.querySelectorAll('.conversation-item').forEach(el => {
+        el.classList.remove('active');
+    });
+}
+
+function appendThinkingToBubble(bubble, thinking_chain) {
+    const details = document.createElement('div');
+    details.className = 'process-details';
+
+    const toggle = document.createElement('button');
+    toggle.className = 'process-toggle';
+    toggle.innerHTML = `<span class="arrow">▶</span> View Thought Process (${thinking_chain.length} steps)`;
+    
+    const content = document.createElement('div');
+    content.className = 'process-content';
+
+    toggle.onclick = () => {
+        toggle.classList.toggle('open');
+        content.classList.toggle('open');
+    };
+
+    let html = '';
+    thinking_chain.forEach((item) => {
+        html += `<div class="iteration"><h4>Step ${item.iteration}</h4>`;
+        if (item.plan_rationale) {
+            html += `<div class="process-item"><div class="process-label">🧠 Rationale</div>${escapeHtml(item.plan_rationale)}</div>`;
+        }
+        if (item.eval_action) {
+            const emoji = { PASS: '✅', PARTIAL_ACCEPT: '⚠️', NEEDS_REVISION: '🔄' }[item.eval_action] || '❓';
+            html += `<div class="process-item"><div class="process-label">🎯 Action</div>${emoji} ${escapeHtml(item.eval_action)}</div>`;
+        }
+        if (item.eval_thought) {
+            html += `<div class="process-item"><div class="process-label">🧐 Analysis</div>${escapeHtml(item.eval_thought)}</div>`;
+        }
+        if (item.agent_results && Object.keys(item.agent_results).length > 0) {
+            html += `<div class="process-item"><div class="process-label">📊 Results</div>`;
+            for (const [k, v] of Object.entries(item.agent_results)) {
+                html += `<div><strong>${escapeHtml(k)}</strong>: ${escapeHtml(String(v))}</div>`;
+            }
+            html += `</div>`;
+        }
+        html += `</div>`;
+    });
+
+    content.innerHTML = html;
+    details.appendChild(toggle);
+    details.appendChild(content);
+    bubble.appendChild(details);
+}
+
+// Update existing newChatBtn click listener
+newChatBtn.onclick = startNewChat;
 
 // ─── Quick Actions ───
 function quickAction(text) {

@@ -54,7 +54,7 @@ async def evaluator_node(state: OrchestratorState) -> dict:
     # ─── 构建 Worker 结果展示 ───
     if results:
         results_block = "\n".join(
-            [f"  ### {k}\n  {str(v)[:1000]}" for k, v in results.items()]
+            [f"  ### {k}\n  {str(v)}" for k, v in results.items()]
         )
     else:
         results_block = "（无 Worker 返回结果）"

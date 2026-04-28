@@ -70,7 +70,7 @@ def route_after_eval(state: OrchestratorState) -> str:
     return "final_reply"
 
 
-def build_graph() -> StateGraph:
+def build_graph(checkpointer=None) -> StateGraph:
     """构建并编译 Planner-Evaluator 工作流图。"""
     workflow = StateGraph(OrchestratorState)
 
@@ -104,6 +104,5 @@ def build_graph() -> StateGraph:
     # 5. Final_Reply → END
     workflow.add_edge("final_reply", END)
 
-    # ─── 编译 (含 MemorySaver 支持多轮对话记忆) ───
-    checkpointer = MemorySaver()
+    # ─── 编译 ───
     return workflow.compile(checkpointer=checkpointer)

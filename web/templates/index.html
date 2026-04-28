@@ -9,26 +9,40 @@
 </head>
 <body>
     <div class="app-container">
-        <!-- Header -->
-        <header class="header">
-            <div class="header-left">
-                <div class="logo-icon">🧠</div>
-                <div>
-                    <div class="header-title">Intent-Recognition</div>
-                    <div class="header-subtitle">Multi-Agent Orchestrator</div>
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-logo">🧠 History</div>
+                <button id="close-sidebar-btn" class="sidebar-close">✕</button>
+            </div>
+            <button id="sidebar-new-chat-btn" class="btn-new-chat">+ New Chat</button>
+            <div id="conversation-list" class="conversation-list">
+                <!-- Conversations will be loaded here -->
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="header">
+                <div class="header-left">
+                    <button id="toggle-sidebar-btn" class="btn-toggle-sidebar" title="Show History">☰</button>
+                    <div class="logo-icon">🧠</div>
+                    <div>
+                        <div class="header-title">Intent-Recognition</div>
+                        <div class="header-subtitle">Multi-Agent Orchestrator</div>
+                    </div>
                 </div>
-            </div>
-            <div class="header-right">
-                <span class="status-badge online">
-                    <span class="status-dot"></span>
-                    Online
-                </span>
-                <select id="role-select" class="role-select" title="选择角色">
-                    <option value="">Loading...</option>
-                </select>
-                <button id="new-chat-btn" class="btn-icon" title="新对话">🔄</button>
-            </div>
-        </header>
+                <div class="header-right">
+                    <span class="status-badge online">
+                        <span class="status-dot"></span>
+                        Online
+                    </span>
+                    <select id="role-select" class="role-select" title="选择角色">
+                        <option value="">Loading...</option>
+                    </select>
+                    <button id="new-chat-btn" class="btn-icon" title="新对话">🔄</button>
+                </div>
+            </header>
 
         <!-- Chat Area -->
         <div id="chat-area" class="chat-area">
@@ -61,6 +75,7 @@
         </div>
 
         <input type="file" id="file-input" multiple accept="image/*,.pdf,.doc,.docx,.txt,.md,.csv,.xlsx">
+        </main>
     </div>
 
     <script src="/static/app.js"></script>

@@ -29,7 +29,7 @@ def _load_dotenv_if_available() -> None:
 
 def _env_key_for_agent(agent_id: str) -> str:
     normalized = agent_id.upper().replace("-", "_")
-    return f"DIFY_{normalized}_API_KEY"
+    return f"{normalized}_API_KEY"
 
 
 def _legacy_env_key_for_agent(agent_id: str) -> str:

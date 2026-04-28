@@ -13,6 +13,7 @@ Intent-Recognition Main Service — FastAPI 入口。
 import os
 import uuid
 import shutil
+import asyncio
 from pathlib import Path
 from typing import Any, Optional, List
 
@@ -22,24 +23,83 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from psycopg_pool import AsyncConnectionPool
 
 from engine.llm_factory import load_env_file
 from engine.a2a import discover_a2a_agent_cards
 from engine.rbac import RoleBasedAccessControl
 from engine.logging_config import get_logger
 from orchestrator.graph import build_graph
-
-logger = get_logger(__name__)
-
-# ─── 初始化 ───
-load_env_file(".env")
+from db.store import ConversationStore
 
 app = FastAPI(
     title="Intent-Recognition Service",
     description="LangGraph 多智能体编排系统 — Planner-Evaluator 架构",
     version="1.0.0",
 )
+
+logger = get_logger(__name__)
+
+# ─── 初始化 ───
+load_env_file(".env")
+
+# ─── 数据库与持久化 ───
+DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL")
+_CHECKPOINTER = None
+_STORE = None
+_DB_POOL = None
+
+async def _init_persistence():
+    global _CHECKPOINTER, _STORE, _DB_POOL
+    if not DATABASE_URL:
+        logger.warning("DATABASE_URL not set, persistence disabled.")
+        return
+
+    try:
+        logger.info(f"Connecting to database: {DATABASE_URL}")
+
+        # Step 1: 用一个独立的 autocommit 连接执行 setup()
+        #         因为 setup() 内部有 CREATE INDEX CONCURRENTLY，不能在事务内运行
+        from psycopg import AsyncConnection as PsycopgAsyncConnection
+        async with await PsycopgAsyncConnection.connect(
+            DATABASE_URL, autocommit=True
+        ) as setup_conn:
+            temp_saver = AsyncPostgresSaver(setup_conn)
+            await temp_saver.setup()
+            logger.info("Checkpoint tables migration complete.")
+
+        # Step 2: 创建全局连接池 (用于运行时)
+        _DB_POOL = AsyncConnectionPool(conninfo=DATABASE_URL, max_size=20, open=False)
+        await _DB_POOL.open()
+
+        # Step 3: 初始化元数据存储
+        _STORE = ConversationStore(DATABASE_URL)
+        _STORE.pool = _DB_POOL  # 复用连接池
+        await _STORE.init_db()
+
+        # Step 4: 创建运行时 Checkpointer (使用连接池)
+        _CHECKPOINTER = AsyncPostgresSaver(_DB_POOL)
+        
+        logger.info("Persistence layer (PostgreSQL) ready.")
+    except Exception as e:
+        logger.error(f"Failed to initialize persistence: {e}")
+        _CHECKPOINTER = None
+        _STORE = None
+
+@app.on_event("startup")
+async def startup_event():
+    await _init_persistence()
+    # 在持久化初始化完成后立即构建图，确保 checkpointer 已就绪
+    _get_graph()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    if _DB_POOL:
+        await _DB_POOL.close()
+
+
 
 # 静态文件 & 模板
 PROJECT_ROOT = Path(__file__).parent
@@ -90,7 +150,8 @@ def _get_graph():
     global _GRAPH
     if _GRAPH is None:
         logger.info("Building LangGraph orchestrator...")
-        _GRAPH = build_graph()
+        # 传入数据库 Checkpointer 实现持久化
+        _GRAPH = build_graph(checkpointer=_CHECKPOINTER)
         logger.info("LangGraph orchestrator ready.")
     return _GRAPH
 
@@ -184,8 +245,7 @@ async def upload_file(file: UploadFile = File(...)):
     返回文件元信息，由前端在后续 /chat 请求中引用。
     """
     file_id = str(uuid.uuid4())
-    ext = Path(file.filename or "file").suffix
-    save_name = f"{file_id}{ext}"
+    save_name = file.filename or f"{file_id}.bin"
     save_path = UPLOAD_DIR / save_name
 
     with open(save_path, "wb") as f:
@@ -193,7 +253,7 @@ async def upload_file(file: UploadFile = File(...)):
         f.write(content)
 
     # 判断文件类型
-    ext_lower = ext.lower().lstrip(".")
+    ext_lower = Path(save_name).suffix.lower().lstrip(".")
     file_type = "image" if ext_lower in ("png", "jpg", "jpeg", "bmp", "webp", "gif") else "document"
 
     logger.info(f"File uploaded: {file.filename} -> {save_path} (type={file_type})")
@@ -204,6 +264,72 @@ async def upload_file(file: UploadFile = File(...)):
         "file_type": file_type,
         "save_path": str(save_path),
     }
+
+
+# ─── 会话历史 API ───
+
+@app.get("/conversations")
+async def list_conversations():
+    """获取所有历史会话列表。"""
+    if not _STORE:
+        return {"conversations": []}
+    conversations = await _STORE.list_conversations()
+    return {"conversations": conversations}
+
+
+@app.get("/conversations/{session_id}/messages")
+async def get_conversation_history(session_id: str):
+    """获取特定会话的消息历史与思考链。"""
+    if not _CHECKPOINTER:
+        return {"messages": [], "thinking_chain": []}
+    
+    config = {"configurable": {"thread_id": session_id}}
+    
+    try:
+        checkpoint_tuple = await _CHECKPOINTER.aget_tuple(config)
+    except Exception as e:
+        logger.error(f"[History] Error fetching checkpoint: {e}")
+        return {"messages": [], "thinking_chain": []}
+    
+    if not checkpoint_tuple:
+        return {"messages": [], "thinking_chain": []}
+    
+    # CheckpointTuple.checkpoint 包含 channel_values
+    checkpoint = checkpoint_tuple.checkpoint
+    channel_values = checkpoint.get("channel_values", {})
+    
+    messages = channel_values.get("messages", [])
+    thinking_chain = channel_values.get("thinking_chain", [])
+    
+    # 格式化消息历史
+    formatted = []
+    for msg in messages:
+        role = "user" if isinstance(msg, HumanMessage) else "agent"
+        content = msg.content if hasattr(msg, "content") else str(msg)
+        formatted.append({"role": role, "content": content})
+        
+    return {
+        "messages": formatted,
+        "thinking_chain": thinking_chain
+    }
+
+
+@app.delete("/conversations/{session_id}")
+async def delete_conversation(session_id: str):
+    """彻底删除会话。"""
+    if not _STORE:
+        return JSONResponse(status_code=400, content={"error": "Persistence not enabled"})
+    
+    # 1. 删除 LangGraph checkpoint 数据
+    if _CHECKPOINTER:
+        try:
+            await _CHECKPOINTER.adelete_thread(session_id)
+        except Exception as e:
+            logger.warning(f"[Delete] Failed to delete checkpoints: {e}")
+    
+    # 2. 删除元数据
+    await _STORE.delete_metadata(session_id)
+    return {"status": "ok"}
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -271,6 +397,18 @@ async def chat(request: ChatRequest):
 
     try:
         result = await graph.ainvoke(initial_state, config=config)
+        
+        # 更新会话元数据 (异步不阻塞回复)
+        if _STORE:
+            # 摘要取用户输入前 40 字
+            title = request.query[:40] if len(request.query) > 40 else request.query
+            messages = result.get("messages", [])
+            asyncio.create_task(_STORE.upsert_conversation(
+                session_id=session_id,
+                title=title,
+                role=request.role or "default",
+                message_count=len(messages)
+            ))
 
         return ChatResponse(
             answer=result.get("final_text", "未能生成回复"),
@@ -280,7 +418,7 @@ async def chat(request: ChatRequest):
             eval_action=result.get("eval_action", ""),
             eval_thought=result.get("eval_thought", ""),
             agent_results={
-                k: str(v)[:500]
+                k: str(v)
                 for k, v in (result.get("results") or {}).items()
                 if not k.startswith("_")
             },
@@ -316,15 +454,14 @@ async def chat_with_files(
         for f in files:
             if f.filename:
                 file_id = str(uuid.uuid4())
-                ext = Path(f.filename).suffix
-                save_name = f"{file_id}{ext}"
+                save_name = f.filename or f"{file_id}.bin"
                 save_path = UPLOAD_DIR / save_name
 
                 with open(save_path, "wb") as out:
                     content = await f.read()
                     out.write(content)
 
-                ext_lower = ext.lower().lstrip(".")
+                ext_lower = Path(save_name).suffix.lower().lstrip(".")
                 file_info = {
                     "file_id": file_id,
                     "file_name": f.filename,
@@ -385,6 +522,17 @@ async def chat_with_files(
     try:
         result = await graph.ainvoke(initial_state, config=config)
 
+        # 更新会话元数据
+        if _STORE:
+            title = query[:40] if len(query) > 40 else query
+            messages = result.get("messages", [])
+            asyncio.create_task(_STORE.upsert_conversation(
+                session_id=sid,
+                title=title,
+                role=role or "default",
+                message_count=len(messages)
+            ))
+
         return {
             "answer": result.get("final_text", "未能生成回复"),
             "session_id": sid,
@@ -393,7 +541,7 @@ async def chat_with_files(
             "eval_action": result.get("eval_action", ""),
             "eval_thought": result.get("eval_thought", ""),
             "agent_results": {
-                k: str(v)[:500]
+                k: str(v)
                 for k, v in (result.get("results") or {}).items()
                 if not k.startswith("_")
             },
