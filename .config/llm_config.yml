@@ -47,7 +47,7 @@ llm:
   # DeepSeek:
   #   deepseek-chat / deepseek-reasoner
   # ─────────────────────────────────────────
-  model: "deepseek-chat"
+  model: "deepseek-v4-flash"
 
   # 温度参数 (0=精准, 1=创意)
   temperature: 0.7
