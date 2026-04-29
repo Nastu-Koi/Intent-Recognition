@@ -30,7 +30,7 @@ from psycopg_pool import AsyncConnectionPool
 from engine.llm_factory import load_env_file
 from engine.a2a import discover_a2a_agent_cards
 from engine.rbac import RoleBasedAccessControl
-from engine.logging_config import get_logger
+from engine.logging_config import get_logger, setup_logging
 from orchestrator.graph import build_graph
 from db.store import ConversationStore
 
@@ -40,10 +40,12 @@ app = FastAPI(
     version="1.0.0",
 )
 
-logger = get_logger(__name__)
-
 # ─── 初始化 ───
 load_env_file(".env")
+
+# ─── 初始化日志系统 ───
+setup_logging()
+logger = get_logger(__name__)
 
 # ─── 数据库与持久化 ───
 DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL")
