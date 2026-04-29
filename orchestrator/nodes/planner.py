@@ -13,6 +13,21 @@ from orchestrator.state import OrchestratorState, PlanOutput
 from engine.llm_factory import get_llm_model
 from engine.logging_config import get_logger
 
+# 可选：动态加载 Agent Cards
+try:
+    from engine.agent_cards import load_cards_async, get_agent_card_manager
+    from orchestrator.nodes.planner_modules.agent_router import get_agent_metadata
+    AGENT_CARDS_AVAILABLE = True
+except ImportError:
+    AGENT_CARDS_AVAILABLE = False
+
+# 可选：任务验证
+try:
+    from orchestrator.nodes.planner_modules.task_builder import filter_valid_tasks
+    TASK_VALIDATION_AVAILABLE = True
+except ImportError:
+    TASK_VALIDATION_AVAILABLE = False
+
 logger = get_logger(__name__)
 
 # 缓存 LLM 实例
@@ -52,6 +67,10 @@ async def planner_node(state: OrchestratorState) -> dict:
 
     - 首轮: 纯粹分析用户需求
     - 迭代轮: 参考 feedback_history 进行修正规划
+    
+    集成的功能：
+    - 优先动态加载 Agent Cards（最新信息）
+    - 降级到 state 中的 available_agents（RBAC 过滤）
     """
     llm = _get_planner_llm()
 
@@ -62,8 +81,39 @@ async def planner_node(state: OrchestratorState) -> dict:
         # 降级：用原始 LLM + JSON 解析
         structured_llm = None
 
-    # ─── 动态构建 Agent 能力清单 ───
-    available_agents = state.get("available_agents", [])
+    # ─── 加载可用 Agents（优先动态加载，然后 fallback 到 state） ───
+    available_agents = []
+    
+    if AGENT_CARDS_AVAILABLE:
+        try:
+            available_cards = await load_cards_async(force_refresh=True)
+            for card in available_cards:
+                meta = get_agent_metadata(card)
+                
+                # 提取完整的 skills 和 intent_patterns
+                skills = card.capabilities.skills if hasattr(card, 'capabilities') and hasattr(card.capabilities, 'skills') else []
+                intent_patterns = meta.get('intent_patterns', [])
+                
+                # 构建统一格式的 agent 信息
+                available_agents.append({
+                    'agent_id': meta['agent_id'],
+                    'name': meta['name'],
+                    'description': meta['description'],
+                    'skills': skills,
+                    'keywords': meta.get('keywords', []),
+                    'intent_patterns': intent_patterns,
+                    'scope': meta.get('scope', []),
+                    'examples': meta.get('examples', []),
+                })
+            logger.info(f"[Planner] 动态加载了 {len(available_agents)} 个 Agent Cards")
+        except Exception as e:
+            logger.warning(f"[Planner] 动态加载 Agent Cards 失败，回退到 state 配置: {e}")
+            available_agents = state.get("available_agents", [])
+    else:
+        # Agent Cards 模块不可用，使用 state 中的配置
+        available_agents = state.get("available_agents", [])
+        logger.debug("[Planner] 使用 state 中的 available_agents")
+    
     agent_catalog = _build_agent_catalog(available_agents)
     valid_agent_ids = [a["agent_id"] for a in available_agents]
 
@@ -133,6 +183,23 @@ async def planner_node(state: OrchestratorState) -> dict:
 
             f"\n### 可用 Agent 能力清单:\n{agent_catalog}\n\n"
 
+            "\n### 🎯 LLM 任务分配指南（关键！）:\n"
+            "**分配原理**：不要基于你的常识或通用理解来分配任务。相反，应该严格基于上面列出的 Agent 的描述（description）、技能（skills）和意图模式（intent_patterns）。\n\n"
+            "**分配步骤**：\n"
+            "1. **理解每个 Agent 的职责**：仔细阅读每个 Agent 的 description、skills 和 intent_patterns。\n"
+            "2. **分析用户查询**：识别查询中的关键需求。\n"
+            "3. **评分相关性**：对于每个查询需求，计算每个 Agent 的相关性分数：\n"
+            "   - 如果 Agent 的 intent_patterns 包含相关关键词 → 高分（80-100）\n"
+            "   - 如果 Agent 的 skills 或 keywords 相关 → 中分（50-80）\n"
+            "   - 如果 Agent 的 description 提及了这个领域 → 低分（20-50）\n"
+            "   - 否则 → 无关（0）\n"
+            "4. **选择最高分 Agent**：为每个需求分配最相关的 Agent（分数最高的）。\n"
+            "5. **拆分多需求**：如果用户有多个不同领域的需求，必须拆分为多个任务。\n\n"
+            "**示例**：\n"
+            "- 用户说\"办理门卡\" → 查找 intent_patterns 包含\"门卡\"或\"card\"的 Agent → 分配给该 Agent\n"
+            "- 用户说\"购买礼品\" → 查找 intent_patterns 包含\"礼品\"或\"采购\"的 Agent → 分配给该 Agent\n"
+            "- 用户既说\"办理门卡\"又说\"购买礼品\" → 两个不同的 Agent 各处理一个任务\n\n"
+
             "### 输出格式:\n"
             "你必须输出 JSON，包含 rationale (规划思路) 和 tasks (任务列表)。\n"
             "每个 task 包含 target (agent_id) 和 instruction (执行指令)。\n"
@@ -177,13 +244,23 @@ async def planner_node(state: OrchestratorState) -> dict:
                 "tasks": raw.get("tasks", [])
             }
 
-        # 校验 target 合法性
+        # 校验任务格式和 target 合法性
+        tasks = plan_data.get("tasks", [])
+        
+        # 第 1 步：格式验证（如果 filter_valid_tasks 可用）
+        if TASK_VALIDATION_AVAILABLE:
+            tasks = filter_valid_tasks(tasks)
+            logger.debug(f"[Planner] 格式验证后任务数: {len(tasks)}")
+        
+        # 第 2 步：target 合法性校验
         valid_tasks = []
-        for task in plan_data.get("tasks", []):
-            if task.get("target") in valid_agent_ids:
+        for task in tasks:
+            target = task.get("target")
+            if target in valid_agent_ids:
                 valid_tasks.append(task)
             else:
-                logger.warning(f"[Planner] Skipped invalid target: {task.get('target')}")
+                logger.warning(f"[Planner] Skipped invalid target: {target}")
+        
         plan_data["tasks"] = valid_tasks
 
         logger.info(

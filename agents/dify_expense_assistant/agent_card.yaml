@@ -1,0 +1,91 @@
+# Expense Assistant Agent Card
+# 报销客服助手 - 财务报销政策与操作
+
+metadata:
+  agent_id: dify_expense_assistant
+  name: 报销助手
+  description: "财务报销政策与操作咨询 - 解决报销全流程中的政策疑问与系统操作问题"
+  version: "1.0.0"
+  category: "finance"
+  author: "Finance Team"
+
+capabilities:
+  skills:
+    - expense_processing
+    - receipt_management
+    - travel_standards
+    - budget_policy
+    - project_code_selection
+    - expense_rejection_handling
+  
+  keywords:
+    - 报销
+    - 差旅
+    - 发票
+    - 预算
+    - 项目编码
+    - 项目code
+    - 住宿
+    - 交通
+    - 餐饮
+    - 差旅费
+    - 报销单
+    - 费用报销
+    - 发票抬头
+  
+  intent_patterns:
+    - expense_report          # 英文意图标识
+    - 报销流程
+    - 如何报销
+    - 差旅费怎么报
+    - 发票要求
+    - 项目Code选择
+  
+  confidence_threshold: 0.6
+  priority: 70
+
+configuration:
+  max_iterations: 30
+  timeout: 300
+  max_input_length: 10000
+  temperature: 0.7
+
+execution:
+  module: "agents.dify_expense_assistant.subagent"
+  class_name: "DifyExpenseAssistantAgent"
+  mode: "sync"
+
+dependencies:
+  python_packages:
+    - requests
+    - pyyaml
+  external_services:
+    - dify_api
+  knowledge_bases:
+    - provider: dify
+      dataset_id: "7661a5b6-f055-4057-8098-be31d422cc3e"
+      dataset_name: "expense_assistant"
+      description: "覆盖报销流程、发票要求、差旅标准、预算政策、项目编码和报销异常处理"
+
+monitoring:
+  enable_logging: true
+  log_level: "INFO"
+  metrics:
+    - response_time
+    - success_rate
+    - policy_accuracy
+
+scope:
+  - 报销流程
+  - 发票要求
+  - 差旅标准(住宿/交通/餐饮)
+  - 可报销项目清单
+  - 项目编码/项目Code选择
+  - 预算政策
+  - 报销被拒处理
+
+examples:
+  - 差旅费怎么报销
+  - 发票抬头填错了怎么办
+  - 为什么我选不了报销项目Code
+  - 报销被拒了怎么处理

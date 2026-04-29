@@ -7,3 +7,5 @@ agents:
     card_url: "http://127.0.0.1:8103/.well-known/agent-card.json"
   - id: dify_vision
     card_url: "http://127.0.0.1:8104/.well-known/agent-card.json"
+  - id: dify_expense_assistant
+    card_url: "http://127.0.0.1:8105/.well-known/agent-card.json"  
