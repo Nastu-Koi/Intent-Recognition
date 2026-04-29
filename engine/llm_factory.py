@@ -25,6 +25,9 @@ def load_env_file(env_file: str = ".env"):
     加载 .env 文件中的环境变量
 
     优先级：已存在的环境变量 > .env 文件 > 默认值
+    
+    注意：在 Docker 环境中，env_file 可能不存在（被 .dockerignore 排除），
+    但环境变量已通过 docker-compose.yml 的 env_file 指令注入容器。
     """
     try:
         from dotenv import load_dotenv
@@ -39,8 +42,14 @@ def load_env_file(env_file: str = ".env"):
             _LOADED_ENV_FILES.add(env_key)
             print(f"✅ 已加载环境变量文件: {env_file}")
         else:
-            print(f"⚠️  未找到 .env 文件: {env_file}")
-            print(f"   提示：复制 .env.example 为 .env 并填写你的 API Key")
+            # 在 Docker 环境中，env_file 可能被 .dockerignore 排除
+            # 但环境变量已通过 docker-compose.yml 的 env_file 指令注入
+            is_docker = Path("/.dockerenv").exists()
+            if not is_docker:
+                print(f"⚠️  未找到 .env 文件: {env_file}")
+                print(f"   提示：复制 .env.example 为 .env 并填写你的 API Key")
+            else:
+                print(f"📦 在 Docker 环境中运行，跳过 .env 文件加载（环境变量由 env_file 指令提供）")
 
     except ImportError:
         print("⚠️  未安装 python-dotenv，跳过 .env 文件加载")

@@ -1,6 +1,29 @@
 # Intent-Recognition
 <img width="690" height="631" alt="Agent架构" src="https://github.com/user-attachments/assets/b70165ec-dc1d-4665-bd84-cac0617cc6fa" />
 
+
+## 使用 Docker Compose 部署
+
+```bash
+# 1. 配置环境变量
+cp .env.example .env
+# 编辑 .env，填入你的 API Key 和数据库密码
+
+# 2. 启动所有服务
+docker-compose up -d
+
+# 3. 查看日志
+docker-compose logs -f app
+
+# 4. 停止所有服务
+docker-compose down
+
+# 应用访问地址
+# 主应用: http://localhost:8000
+# API 文档: http://localhost:8000/docs
+# 数据库: localhost:5432
+```
+
 ### 快速启动指南
 
 **1. 创建环境变量文件**

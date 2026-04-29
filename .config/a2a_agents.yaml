@@ -1,11 +1,29 @@
+# A2A 代理配置（支持 Docker 和本地开发）
+# 配置优先级：当前节点 card_url > 自动生成
+
+config:
+  # A2A 协议常量
+  agent_id_prefix: "dify_"           # Agent ID 前缀（用于提取容器名）
+  docker_name_prefix: "agent-"       # Docker 容器名前缀
+  well_known_path: "/.well-known/agent-card.json"  # A2A 标准路径
+  
+  # 端口配置
+  base_port: 8101                    # 本地开发起始端口
+  
+  # 本地开发配置
+  local_host: "127.0.0.1"
+  
+  # Docker 配置
+  docker_host: "agent-"              # 容器名前缀（自动生成容器地址）
+
 agents:
   - id: dify_file_uploader
-    card_url: "http://127.0.0.1:8101/.well-known/agent-card.json"
+    port: 8101
   - id: dify_doc_summary
-    card_url: "http://127.0.0.1:8102/.well-known/agent-card.json"
+    port: 8102
   - id: dify_knowledge_qa
-    card_url: "http://127.0.0.1:8103/.well-known/agent-card.json"
+    port: 8103
   - id: dify_vision
-    card_url: "http://127.0.0.1:8104/.well-known/agent-card.json"
+    port: 8104
   - id: dify_expense_assistant
-    card_url: "http://127.0.0.1:8105/.well-known/agent-card.json"  
+    port: 8105  

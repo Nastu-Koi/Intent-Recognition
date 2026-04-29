@@ -1,0 +1,207 @@
+# ============================================================================
+# Intent-Recognition Docker Compose 配置
+# ============================================================================
+# 启动指令:
+#   docker-compose up -d
+# 停止指令:
+#   docker-compose down
+# 查看日志:
+#   docker-compose logs -f app
+# ============================================================================
+
+services:
+  # ─── PostgreSQL 数据库服务 ───
+  postgres:
+    image: postgres:15-alpine
+    container_name: intent-recognition-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # 数据库数据持久化
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - intent-recognition-network
+
+  # ─── A2A SubAgent 服务 ───
+  
+  # 1. 文件上传代理 (Port 8101)
+  agent-file-uploader:
+    build: .
+    container_name: intent-recognition-file-uploader
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      A2A_HOST: "0.0.0.0"
+      A2A_HOST_PREFIX: "agent-"
+      A2A_PUBLIC_BASE_URL: "http://agent-file-uploader:8101"
+      A2A_AGENT_ID: dify_file_uploader
+      A2A_PORT: 8101
+      POSTGRES_HOST: postgres
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8101:8101"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+    networks:
+      - intent-recognition-network
+    restart: unless-stopped
+    command: ["python", "agent_a2a_service.py"]
+
+  # 2. 文档摘要代理 (Port 8102)
+  agent-doc-summary:
+    build: .
+    container_name: intent-recognition-doc-summary
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      A2A_HOST: "0.0.0.0"
+      A2A_HOST_PREFIX: "agent-"
+      A2A_PUBLIC_BASE_URL: "http://agent-doc-summary:8102"
+      A2A_AGENT_ID: dify_doc_summary
+      A2A_PORT: 8102
+      POSTGRES_HOST: postgres
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8102:8102"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+    networks:
+      - intent-recognition-network
+    restart: unless-stopped
+    command: ["python", "agent_a2a_service.py"]
+
+  # 3. 知识库问答代理 (Port 8103)
+  agent-knowledge-qa:
+    build: .
+    container_name: intent-recognition-knowledge-qa
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      A2A_HOST: "0.0.0.0"
+      A2A_HOST_PREFIX: "agent-"
+      A2A_PUBLIC_BASE_URL: "http://agent-knowledge-qa:8103"
+      A2A_AGENT_ID: dify_knowledge_qa
+      A2A_PORT: 8103
+      POSTGRES_HOST: postgres
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8103:8103"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+    networks:
+      - intent-recognition-network
+    restart: unless-stopped
+    command: ["python", "agent_a2a_service.py"]
+
+  # 4. 视觉代理 (Port 8104)
+  agent-vision:
+    build: .
+    container_name: intent-recognition-vision
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      A2A_HOST: "0.0.0.0"
+      A2A_HOST_PREFIX: "agent-"
+      A2A_PUBLIC_BASE_URL: "http://agent-vision:8104"
+      A2A_AGENT_ID: dify_vision
+      A2A_PORT: 8104
+      POSTGRES_HOST: postgres
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8104:8104"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+    networks:
+      - intent-recognition-network
+    restart: unless-stopped
+    command: ["python", "agent_a2a_service.py"]
+
+  # 5. 报销助手 (Port 8105)
+  agent-expense-assistant:
+    build: .
+    container_name: intent-recognition-expense-assistant
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      A2A_HOST: "0.0.0.0"
+      A2A_HOST_PREFIX: "agent-"
+      A2A_PUBLIC_BASE_URL: "http://agent-expense-assistant:8105"
+      A2A_AGENT_ID: dify_expense_assistant
+      A2A_PORT: 8105
+      POSTGRES_HOST: postgres
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "8105:8105"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+    networks:
+      - intent-recognition-network
+    restart: unless-stopped
+    command: ["python", "agent_a2a_service.py"]
+
+  # ─── FastAPI 主编排服务 ───
+  app:
+    env_file: .env
+    build: .
+    container_name: intent-recognition-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      agent-file-uploader:
+        condition: service_started
+      agent-doc-summary:
+        condition: service_started
+      agent-knowledge-qa:
+        condition: service_started
+      agent-vision:
+        condition: service_started
+      agent-expense-assistant:
+        condition: service_started
+    environment:
+      # A2A 环境检测
+      A2A_HOST_PREFIX: "agent-"
+      POSTGRES_HOST: postgres
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    volumes:
+      # 上传文件目录持久化
+      - ./uploads:/app/uploads
+      # 日志目录持久化
+      - ./logs:/app/logs
+    networks:
+      - intent-recognition-network
+    restart: unless-stopped
+
+networks:
+  intent-recognition-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
