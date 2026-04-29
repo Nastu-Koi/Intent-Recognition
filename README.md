@@ -42,6 +42,12 @@ A2A_AGENT_ID=dify_knowledge_qa A2A_PORT=8103 python agent_a2a_service.py
 A2A_AGENT_ID=dify_vision A2A_PORT=8104 python agent_a2a_service.py
 ``
 
+终端 5：报销助手
+
+``
+A2A_AGENT_ID=dify_expense_assistant A2A_PORT=8105 python agent_a2a_service.py
+``
+
 **4. 启动主编排服务**
 打开第 5 个终端窗口，启动主控程序：
 
