@@ -41,7 +41,7 @@ class PlanOutput(BaseModel):
 class EvalResult(BaseModel):
     """Evaluator 节点的结构化输出 — 系统核心防死锁模型。"""
     thought: str = Field(
-        description="思考过程：分析 Worker 返回结果的质量、完整性，以及是否与历史反馈重复。"
+        description="思考过程：分析 Dispatcher 返回结果的质量、完整性，以及是否与历史反馈重复。"
     )
     action: Literal["PASS", "PARTIAL_ACCEPT", "NEEDS_REVISION"] = Field(
         description=(
@@ -72,7 +72,7 @@ class OrchestratorState(MessagesState):
 
     动态数据 (每轮覆盖/累加):
     - plan: Planner 生成的任务计划 (Dict)
-    - results: Workers 并发结果 (自动合并 via operator.ior)
+    - results: Dispatcher 并发结果 (自动合并 via operator.ior)
     - iter: 当前迭代轮次 (自动累加 via operator.add)
     - feedback_history: Evaluator 的增量反馈记录 (自动追加 via operator.add)
     - eval_action: Evaluator 的最新 action
@@ -88,7 +88,7 @@ class OrchestratorState(MessagesState):
 
     # 动态数据
     plan: Dict[str, Any]                                        # Planner 输出的任务计划
-    results: Dict[str, Any]                                     # Workers 并发结果 (明确管理)
+    results: Dict[str, Any]                                     # Dispatcher 并发结果 (明确管理)
     _agent_outputs: Dict[str, Any]                              # SubAgent 结构化输出
     iter: int                                                   # 当前迭代轮次
     feedback_history: List[str]                                 # 增量反馈历史

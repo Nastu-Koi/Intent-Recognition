@@ -1,5 +1,5 @@
 """
 LangGraph Orchestrator — Planner-Evaluator 多智能体编排层。
 
-核心流程: Planner → Workers (A2A) → Evaluator → Final Reply
+核心流程: Planner → Dispatcher (A2A) → Sub Agents → Evaluator → Final Reply
 """

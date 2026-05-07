@@ -9,7 +9,6 @@ Planner Modules — 规划节点的辅助模块。
 from .agent_router import find_matches, route_query_multi, filter_agents_by_role, get_agent_metadata
 from .task_builder import (
     build_task_item,
-    build_dify_task,
     build_a2a_task,
     build_tasks_from_routes,
     validate_task_item,
@@ -25,7 +24,6 @@ __all__ = [
     "get_agent_metadata",
     # task_builder
     "build_task_item",
-    "build_dify_task",
     "build_a2a_task",
     "build_tasks_from_routes",
     "validate_task_item",

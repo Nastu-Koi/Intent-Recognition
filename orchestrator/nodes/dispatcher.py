@@ -1,5 +1,5 @@
 """
-Workers Node — A2A JSON-RPC 并发执行节点。
+Dispatcher Node — A2A JSON-RPC 并发执行节点。
 
 职责:
   - 解析 Planner 的 plan
@@ -36,8 +36,8 @@ async def _a2a_send_message(
         instruction: Planner 分派的具体执行指令
         original_query: 用户原始问题
         file_ctx: 文件上下文 (含 file_path 等)
-        prior_results: 之前 Worker 的执行结果 (供依赖链使用)
-        prior_structured: 之前 Worker 的结构化输出 (含 file_id 等)
+        prior_results: 之前 Sub Agents 的执行结果 (供依赖链使用)
+        prior_structured: 之前 Sub Agents 的结构化输出 (含 file_id 等)
         timeout: 请求超时时间
 
     Returns:
@@ -96,13 +96,13 @@ async def _a2a_send_message(
         return (agent_id, text, structured)
 
     except aiohttp.ClientError as e:
-        logger.error(f"[Workers] A2A HTTP error for {agent_id}: {e}")
+        logger.error(f"[Dispatcher] A2A HTTP error for {agent_id}: {e}")
         return (agent_id, f"[{agent_id}] HTTP 调用异常: {e}", {})
     except asyncio.TimeoutError:
-        logger.error(f"[Workers] A2A timeout for {agent_id}")
+        logger.error(f"[Dispatcher] A2A timeout for {agent_id}")
         return (agent_id, f"[{agent_id}] 调用超时", {})
     except Exception as e:
-        logger.error(f"[Workers] Unexpected error for {agent_id}: {e}")
+        logger.error(f"[Dispatcher] Unexpected error for {agent_id}: {e}")
         return (agent_id, f"[{agent_id}] 调用异常: {e}", {})
 
 
@@ -152,9 +152,9 @@ def _extract_structured_from_a2a_result(result: dict) -> Dict[str, Any]:
     return {k: v for k, v in metadata.items() if k not in ("agent_id", "error")}
 
 
-async def workers_node(state: OrchestratorState) -> dict:
+async def dispatcher_node(state: OrchestratorState) -> dict:
     """
-    Workers 节点: 通过 A2A JSON-RPC 异步并发调用远程 SubAgents。
+    Dispatcher 节点: 通过 A2A JSON-RPC 异步并发调用远程 SubAgents。
 
     - 从 state.plan 获取任务列表
     - 从 state.available_agents 获取 Agent A2A 端点信息
@@ -184,7 +184,7 @@ async def workers_node(state: OrchestratorState) -> dict:
         agent_info = agent_by_id.get(target)
 
         if agent_info is None:
-            logger.warning(f"[Workers] Unknown target '{target}', skipping")
+            logger.warning(f"[Dispatcher] Unknown target '{target}', skipping")
             continue
 
         # 传递当前累积的 agent_outputs 作为 prior_structured
@@ -203,7 +203,7 @@ async def workers_node(state: OrchestratorState) -> dict:
             agent_outputs[target_name] = structured
 
     logger.info(
-        f"[Workers] 任务执行完毕。结果 keys: {list(results.keys())} | "
+        f"[Dispatcher] 任务执行完毕。结果 keys: {list(results.keys())} | "
         f"结构化 keys: {list(agent_outputs.keys())}"
     )
 

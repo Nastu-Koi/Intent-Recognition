@@ -2,7 +2,7 @@
 Final Reply Node — 最终回复生成节点。
 
 职责:
-  - 接收 Worker 累积结果
+  - 接收 Sub Agents 累积结果
   - 整理为用户友好的自然语言回答
   - 进行来源归因 (Source Attribution)
 """
@@ -28,10 +28,10 @@ def _get_reply_llm():
 
 async def final_reply_node(state: OrchestratorState) -> dict:
     """
-    Final_Reply: 将 Worker 结果综合成面向用户的自然语言回答。
+    Final_Reply: 将 Sub Agents 结果综合成面向用户的自然语言回答。
 
-    - 如果有 Worker 结果，综合多源信息并标注来源
-    - 如果无 Worker 结果 (闲聊)，直接根据对话历史回答
+    - 如果有 Sub Agents 结果，综合多源信息并标注来源
+    - 如果无 Sub Agents 结果 (闲聊)，直接根据对话历史回答
     """
     llm = _get_reply_llm()
 

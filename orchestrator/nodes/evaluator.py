@@ -2,7 +2,7 @@
 Evaluator Node — 动态评估节点 (系统核心)。
 
 职责:
-  - 使用 LLM 评估 Worker 结果
+  - 使用 LLM 评估 Sub Agents 执行结果
   - 内嵌查重熔断与动态宽容度等防死锁逻辑
   - 5 轮硬性熔断上限
 """
@@ -31,7 +31,7 @@ def _get_evaluator_llm():
 
 async def evaluator_node(state: OrchestratorState) -> dict:
     """
-    Evaluator: 评估 Worker 执行结果，决定是否需要重新规划。
+    Evaluator: 评估 Sub Agents 执行结果，决定是否需要重新规划。
 
     防死锁机制:
     1. 查重熔断: 检测新反馈是否与 feedback_history 中的历史反馈高度重复
@@ -51,13 +51,13 @@ async def evaluator_node(state: OrchestratorState) -> dict:
     current_iter = state.get("iter", 1)
     feedback_history = state.get("feedback_history", [])
 
-    # ─── 构建 Worker 结果展示 ───
+    # ─── 构建 Sub Agents 结果展示 ───
     if results:
         results_block = "\n".join(
             [f"  ### {k}\n  {str(v)}" for k, v in results.items()]
         )
     else:
-        results_block = "（无 Worker 返回结果）"
+        results_block = "（无 Sub Agents 执行结果）"
 
     # ─── 构建反馈历史 ───
     if feedback_history:
@@ -91,25 +91,25 @@ async def evaluator_node(state: OrchestratorState) -> dict:
 
     system_msg = SystemMessage(
         content=(
-            "你是一个多智能体系统的质量评估师，专职评估 Worker 的执行结果。\n"
+            "你是一个多智能体系统的质量评估师，专职评估 Sub Agents 的执行结果。\n"
             "你**绝不**进行任务规划或调度 — 那是 Planner 的职责。\n\n"
 
             "### 评估上下文:\n"
             "1. **对话历史 (Messages)**: 用户的原始意图与背景。\n"
             f"2. **当前环境文件**: {file_str}\n"
             f"3. **历史评估反馈**: \n{history_block}\n"
-            f"4. **Worker 累积执行结果**: \n{results_block}\n\n"
+            f"4. **Sub Agents 累积执行结果**: \n{results_block}\n\n"
             f"{tolerance_note}"
 
             "### 评估规则 (严格遵守):\n"
-            "1. **整体目标达成判定**: 审查『Worker 累积执行结果』。由于系统采用多轮迭代规划，之前的结果都在这个集合中。"
+            "1. **整体目标达成判定**: 审查『Sub Agents 累积执行结果』。由于系统采用多轮迭代规划，之前的结果都在这个集合中。"
             "只要全量结果集已经满足了用户问题的各个方面，就应判定为 PASS。\n"
             "2. **闲聊与直接对话**: 如果 Planner 判定这是一个通用问题且**未调度任何任务**（累积执行结果为空），"
             "请结合对话历史判断 Responder 是否可以直接回答。如果是，则判定为 PASS。\n"
-            "3. **查重熔断**: 如果你准备提出的修改意见与「历史评估反馈」高度重复，说明 Worker 已达能力瓶颈，"
+            "3. **查重熔断**: 如果你准备提出的修改意见与「历史评估反馈」高度重复，说明 Sub Agents 已达能力瓶颈，"
             "此时**必须**选择 PARTIAL_ACCEPT。\n"
             "4. **决策标准**:\n"
-            "   - PASS: 累积结果已完整解答了用户提问的所有维度，或者是无需 Worker 的直接对话。\n"
+            "   - PASS: 累积结果已完整解答了用户提问的所有维度，或者是无需 Sub Agents 的直接对话。\n"
             "   - PARTIAL_ACCEPT: 核心任务已完成，或由于能力限制无法通过简单修正获得更好结果。\n"
             "   - NEEDS_REVISION: 存在实质性错误或遗漏，且修改建议与历史不重复。\n\n"
             "5. **feedback 字段**: 仅在 NEEDS_REVISION 时填写具体的修改建议。PASS 和 PARTIAL_ACCEPT 时留空。\n"

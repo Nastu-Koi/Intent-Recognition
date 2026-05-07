@@ -157,7 +157,7 @@ async def planner_node(state: OrchestratorState) -> dict:
         results_block = "\n".join(
             [f"  - {k}: {str(v)[:4000]}" for k, v in prev_results.items()]
         )
-        results_ctx = f"\n### 上一轮 Worker 执行结果:\n{results_block}\n"
+        results_ctx = f"\n### 上一轮 Dispatcher 执行结果:\n{results_block}\n"
     else:
         results_ctx = ""
 

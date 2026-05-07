@@ -47,7 +47,7 @@
   - [LangGraph 编排引擎](#langgraph-编排引擎)
     - [State 设计](#state-设计)
     - [Planner 节点](#planner-节点)
-    - [Workers 节点](#workers-节点)
+    - [Dispatcher 节点](#dispatcher-节点)
     - [Evaluator 节点](#evaluator-节点)
     - [Final Reply 节点](#final-reply-节点)
   - [Web 前端](#web-前端)
@@ -60,7 +60,7 @@
 
 Intent-Recognition 是一个生产级的多智能体编排框架，核心思路是用 **LLM 驱动的工作流** 替代传统的硬编码业务逻辑路由。
 
-**运作方式**：用户请求到达后，系统通过 RBAC 验证角色权限，通过 A2A 协议动态发现可用 Agent 的能力，由 Planner (LLM) 分析需求并拆解为任务，Workers 并发调用远程 Agent 执行，Evaluator (LLM) 评估结果质量并决定是否需重新规划，最终由 Final Reply 综合输出。
+**运作方式**：用户请求到达后，系统通过 RBAC 验证角色权限，通过 A2A 协议动态发现可用 Agent 的能力，由 Planner (LLM) 分析需求并拆解为任务，Dispatcher 并发调用远程 Sub Agent 执行，Evaluator (LLM) 评估结果质量并决定是否需重新规划，最终由 Final Reply 综合输出。
 
 **典型场景**：
 - 企业智能助手（报销查询、知识库问答、文件识别）
@@ -216,7 +216,7 @@ Intent-Recognition/
 │   ├── state.py                     #   OrchestratorState：全局状态类型定义 + Pydantic 结构化输出
 │   └── nodes/
 │       ├── planner.py               #     Planner 节点：LLM 分析需求 → 生成 PlanOutput
-│       ├── workers.py               #     Workers 节点：A2A JSON-RPC 并发调用远程 Agent
+│       ├── dispatcher.py            #     Dispatcher 节点：A2A JSON-RPC 并发调用远程 Agent
 │       ├── evaluator.py             #     Evaluator 节点：LLM 评估质量 → 决策路由
 │       ├── final_reply.py           #     Final Reply 节点：综合多源结果 → 自然语言回复
 │       └── planner_modules/
@@ -286,23 +286,23 @@ Intent-Recognition/
 │             ▼                                                │
 │    ┌───────────────┐                                        │
 │    │  tasks 为空?   │                                        │
-│    │  (直接回复)    │──── 是 ────┐                           │
-│    └───────┬───────┘            │                           │
-│            │ 否                 │                           │
-│            ▼                    │                           │
-│  ┌────────────────────┐        │                           │
-│  │  4b. Workers Node  │        │                           │
-│  │  asyncio 并发调用   │        │                           │
-│  │  A2A JSON-RPC      │        │                           │
-│  │  message/send      │        │                           │
-│  │  累积 result       │        │                           │
-│  └────────┬───────────┘        │                           │
-│           ▼                    │                           │
-│  ┌────────────────────┐        │                           │
-│  │  4c. Evaluator Node│        │                           │
-│  │  LLM 评估累积结果   │        │                           │
-│  │  输出: action      │        │                           │
-│  │  PASS / PARTIAL    │──────── 是 ────┐                   │
+│    │  (直接回复)    │──── 是 ──────┐                           │
+│    └───────┬───────┘              │                           │
+│            │ 否                   │                           │
+│            ▼                      │                           │
+│  ┌───────────────────────┐        │                         │
+│  │  4b. Dispatcher Node  │        │                         │
+│  │  asyncio 并发调用      │        │                         │
+│  │  A2A JSON-RPC         │        │                         │
+│  │  message/send         │        │                         │
+│  │  累积 result          │        │                         │
+│  └────────┬──────────────┘        │                        │
+│           ▼                       │                        │
+│  ┌────────────────────┐           │                        │
+│  │  4c. Evaluator Node│           │                        │
+│  │  LLM 评估累积结果   │           │                        │
+│  │  输出: action      │           │                        │
+│  │  PASS / PARTIAL    │───────── 是 ─┐                     │
 │  │  ACCEPT / NEEDS_   │              │                    │
 │  │  REVISION          │              │                    │
 │  └────────┬───────────┘              │                    │
@@ -328,7 +328,7 @@ Intent-Recognition/
 
 | 条件 | 路由 | 说明 |
 |------|------|------|
-| Planner 生成了任务 | → Workers | 需要调度 Agent 执行 |
+| Planner 生成了任务 | → Dispatcher | 需要调度 Agent 执行 |
 | Planner 未生成任务 | → Final Reply | 直接对话，无需 Agent |
 | Evaluator PASS/PARTIAL | → Final Reply | 结果可接受，综合输出 |
 | Evaluator NEEDS_REVISION & iter < 5 | → Planner | 需要修改，重新规划 |
@@ -731,8 +731,8 @@ class MyDifyAgent(DifySubAgent):
 | 字段 | 类型 | Reducer | 说明 |
 |------|------|---------|------|
 | `plan` | `dict` | 覆盖 | Planner 输出的任务计划 (rationale + tasks) |
-| `results` | `dict` | `operator.ior` | Workers 累积结果（增量合并） |
-| `_agent_outputs` | `dict` | `operator.ior` | Workers 结构化输出（增量合并） |
+| `results` | `dict` | `operator.ior` | Dispatcher 累积结果（增量合并） |
+| `_agent_outputs` | `dict` | `operator.ior` | Dispatcher 结构化输出（增量合并） |
 | `iter` | `int` | `operator.add` | 迭代轮次 (自动+1) |
 | `feedback_history` | `list[str]` | `operator.add` | Evaluator 增量反馈（自动追加） |
 | `eval_action` | `str` | 覆盖 | 最新评估决策 |
@@ -748,12 +748,12 @@ class MyDifyAgent(DifySubAgent):
 - 分析输入：用户查询 + 文件上下文 + 对话历史 + 历史反馈
 - 输出：`PlanOutput(rationale, tasks[])`
 - 每个 task 包含 `target` (agent_id) 和 `instruction` (执行指令)
-- 无任务时 (`tasks=[]`) 表示直接对话，跳过 Workers + Evaluator
+- 无任务时 (`tasks=[]`) 表示直接对话，跳过 Dispatcher + Evaluator
 - 降级路径：不支持结构化输出的模型 → 原始 LLM + JSON 解析
 
-### Workers 节点
+### Dispatcher 节点
 
-`orchestrator/nodes/workers.py`
+`orchestrator/nodes/dispatcher.py`
 
 - 通过 `aiohttp` 异步发送 A2A JSON-RPC `message/send` 请求
 - 任务按序执行（非并发），后序任务自动接收前序累积的 `prior_results` 和 `prior_structured`
@@ -779,10 +779,10 @@ class MyDifyAgent(DifySubAgent):
 
 `orchestrator/nodes/final_reply.py`
 
-- 综合所有 Worker 的累积结果
+- 综合所有 Sub Agents 的累积结果
 - 进行来源归因，标注每个 Agent 的贡献
 - 生成面向用户的自然语言回复
-- 处理两种情况：有 Worker 结果（综合多源） / 无结果（直接对话）
+- 处理两种情况：有 Sub Agents 结果（综合多源） / 无结果（直接对话）
 
 ---
 
@@ -815,12 +815,12 @@ class MyDifyAgent(DifySubAgent):
 |--------|------|------|
 | Planner Rationale | INFO | 规划思路摘要 |
 | Planner Tasks | INFO | 生成的任务列表 (target) |
-| Workers A2A 调用 | INFO | 调用的 Agent ID 和任务指令 |
-| Workers 结果 | INFO | 结果 keys 和结构化输出 keys |
+| Dispatcher A2A 调用 | INFO | 调用的 Agent ID 和任务指令 |
+| Dispatcher 结果 | INFO | 结果 keys 和结构化输出 keys |
 | Evaluator 决策 | INFO | Action + 思考摘要 + 当前轮次 |
 | Evaluator 反馈 | INFO | NEEDS_REVISION 时的具体反馈 |
 | Final Reply | INFO | 生成回复长度 |
-| 路由决策 | INFO | Planner → Workers/Final_Reply, Evaluator → Planner/Final_Reply |
+| 路由决策 | INFO | Planner → Dispatcher/Final_Reply, Evaluator → Planner/Final_Reply |
 | 硬性熔断 | INFO | 5 轮上限触发 |
 | Agent 发现 | INFO | 发现 N 个远程 Agent |
 | 文件上传 | INFO | 文件名、路径、类型 |
@@ -843,11 +843,11 @@ A：可以。`general_chat` Agent 不需要 Dify 即可进行通用对话。图�
 
 **Q：如何调试 Agent 的调用过程？**
 
-A：设置 `LOG_LEVEL=DEBUG` 后重启。关键信息在日志中均有输出：Planner 的 Rationale、Workers 的 A2A 请求/响应、Evaluator 的评估决策和思考过程。前端也可展开「查看完整 Agent 思考过程」查看思维链。
+A：设置 `LOG_LEVEL=DEBUG` 后重启。关键信息在日志中均有输出：Planner 的 Rationale、Dispatcher 的 A2A 请求/响应、Evaluator 的评估决策和思考过程。前端也可展开「查看完整 Agent 思考过程」查看思维链。
 
 **Q：Agent 调用超时怎么处理？**
 
-A：Workers 节点对每个 Agent 设置了 60 秒超时。超时的 Agent 不会阻塞整体流程，其错误信息会传入 Evaluator 进行综合判断。可在 `workers.py` 的 `_a2a_send_message` 中调整 `timeout` 参数。
+A：Dispatcher 节点对每个 Agent 设置了 60 秒超时。超时的 Agent 不会阻塞整体流程，其错误信息会传入 Evaluator 进行综合判断。可在 `dispatcher.py` 的 `_a2a_send_message` 中调整 `timeout` 参数。
 
 **Q：Web UI 无法访问怎么办？**
 

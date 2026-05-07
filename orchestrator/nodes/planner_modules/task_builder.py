@@ -44,33 +44,6 @@ def build_task_item(
     }
 
 
-def build_dify_task(
-    executor: str,
-    instruction: str,
-    metadata: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """
-    [Deprecated] 构建 Dify 任务项。
-    
-    注意：该函数已废弃，所有任务现在都通过 A2A 调用。
-    请改用 build_a2a_task()。
-    
-    Args:
-        executor: Dify Worker 名称 (已不再使用)
-        instruction: 执行指令
-        metadata: 扩展元数据
-    
-    Returns:
-        A2A 任务字典 (已自动转换为 a2a_type)
-    """
-    return build_task_item(
-        executor=executor,
-        executor_type="a2a",
-        instruction=instruction,
-        metadata=metadata,
-    )
-
-
 def build_a2a_task(
     executor: str,
     agent_name: str,
