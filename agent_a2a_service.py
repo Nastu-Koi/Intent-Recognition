@@ -2,10 +2,8 @@
 Standalone A2A server for one business agent.
 
 Run one process per agent, for example:
-    A2A_AGENT_ID=dify_file_uploader A2A_PORT=8101 python agent_a2a_service.py
-    A2A_AGENT_ID=dify_doc_summary A2A_PORT=8102 python agent_a2a_service.py
-    A2A_AGENT_ID=dify_knowledge_qa A2A_PORT=8103 python agent_a2a_service.py
-    A2A_AGENT_ID=dify_vision A2A_PORT=8104 python agent_a2a_service.py
+    A2A_AGENT_ID=general_chat A2A_PORT=8101 python agent_a2a_service.py
+    A2A_AGENT_ID=dify_expense_assistant A2A_PORT=8102 python agent_a2a_service.py
 """
 
 from __future__ import annotations

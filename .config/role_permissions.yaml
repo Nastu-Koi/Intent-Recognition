@@ -11,10 +11,8 @@
 #   default_role: Role to use if not specified in request (optional)
 #
 # Current Agents:
-#   - dify_file_uploader:   上传文件到 Dify
-#   - dify_doc_summary:     Dify 文档总结
-#   - dify_knowledge_qa:    Dify 知识库问答
-#   - dify_vision:          Dify 图片识别
+#   - general_chat:           通用对话助手（内置图像识别 + 文档总结工具）
+#   - dify_expense_assistant: 报销助手
 # ============================================================
 
 roles:
@@ -23,16 +21,15 @@ roles:
     name: "普通员工"
     description: "基础员工，仅可访问知识库问答"
     accessible_agents:
-      - dify_knowledge_qa
+      - general_chat
 
   # Advanced employee — knowledge QA + document summary + file upload
   role_b:
     name: "高级员工"
     description: "高级员工，可使用知识库问答、文档总结和文件上传"
     accessible_agents:
-      - dify_knowledge_qa
-      - dify_doc_summary
-      - dify_file_uploader
+      - general_chat
+      - dify_expense_assistant
 
   # Admin — full access to all agents
   role_admin:

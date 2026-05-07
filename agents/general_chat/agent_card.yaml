@@ -1,0 +1,100 @@
+# general_chat Agent Card
+# 通用对话 Agent — 内置图像识别与文档总结工具
+
+metadata:
+  agent_id: general_chat
+  name: 通用对话助手
+  description: "通用智能对话助手，支持日常聊天、问答。内置图像识别（OCR/场景分析/发票识别）和文档总结工具，可自动处理用户上传的图片和文档。"
+  version: "1.0.0"
+  category: "general"
+  author: "System"
+
+capabilities:
+  skills:
+    - general_conversation
+    - question_answering
+    - image_recognition
+    - ocr
+    - invoice_recognition
+    - scene_analysis
+    - image_description
+    - text_extraction
+    - document_summary
+    - text_summarization
+    - report_analysis
+    - key_points_extraction
+  keywords:
+    - 聊天
+    - 对话
+    - 问答
+    - 帮助
+    - 你好
+    - 图片
+    - 图像
+    - 识别
+    - 看图
+    - OCR
+    - 文字识别
+    - 发票识别
+    - 票据
+    - 截图
+    - 照片
+    - 扫描
+    - 拍照
+    - 总结
+    - 摘要
+    - 归纳
+    - 提炼
+    - 核心要点
+    - 文档分析
+    - 报告总结
+    - 内容概括
+  intent_patterns:
+    - general_chat
+    - 日常对话
+    - 通用问答
+    - image_recognition
+    - 识别图片
+    - 看这张图
+    - 图片内容是什么
+    - 帮我识别
+    - summarize_document
+    - 总结文档
+    - 提炼要点
+    - 文档摘要
+  confidence_threshold: 0.5
+  priority: 50
+
+configuration:
+  max_iterations: 5
+  timeout: 180
+  max_input_length: 50000
+  temperature: 0.7
+
+execution:
+  module: "agents.general_chat.subagent"
+  class_name: "GeneralChatAgent"
+  mode: "sync"
+
+dependencies:
+  python_packages:
+    - requests
+    - langchain_openai
+  external_services:
+    - dify_api
+    - llm_api
+
+scope:
+  - 日常聊天与通用问答
+  - 图片/截图内容识别 (OCR、场景分析)
+  - 发票/票据识别
+  - 文档总结与要点提炼
+  - 报告、合同等文档格式分析
+
+examples:
+  - 你好，有什么可以帮你的吗
+  - 帮我识别这张发票上的金额
+  - 这张截图上写了什么
+  - 帮我总结这份合同的关键条款
+  - 这份季度报告的核心内容是什么
+  - 分析一下这张图片的内容

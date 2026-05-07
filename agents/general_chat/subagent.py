@@ -1,0 +1,242 @@
+"""
+General Chat SubAgent — 通用对话 + 工具调用。
+
+使用 LLM tool-calling 机制，在需要时自动调用图像识别和文档总结工具，
+无需 Planner 手动编排文件上传依赖。
+
+LLM 工具调用流程:
+  1. 用户请求 + 文件上下文 → LLM 决定是否需要工具
+  2. 需要工具 → 自动调用 image_recognition / document_summary
+  3. 工具返回结果 → LLM 综合生成最终回复
+  4. 不需要工具 → LLM 直接回复（通用对话）
+"""
+
+import os
+from typing import Dict, Any, List
+
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+
+from engine.dify_subagent import DifySubAgent
+from engine.llm_factory import get_llm_model
+from engine.logging_config import get_logger
+from agents.general_chat.tools import GENERAL_CHAT_TOOLS
+
+logger = get_logger(__name__)
+
+AGENT_ID = "general_chat"
+
+# 最大工具调用轮次（防止无限循环）
+MAX_TOOL_ROUNDS = 5
+
+# 缓存 LLM 实例
+_CHAT_LLM = None
+
+
+def _get_chat_llm():
+    """获取 General Chat 专用的 LLM 实例。"""
+    global _CHAT_LLM
+    if _CHAT_LLM is None:
+        _CHAT_LLM = get_llm_model()
+    return _CHAT_LLM
+
+
+class GeneralChatAgent(DifySubAgent):
+    """
+    通用对话 Agent — 支持工具调用的 LLM SubAgent。
+
+    能力:
+    - 日常对话与通用问答（直接 LLM 回复）
+    - 图片识别（自动上传 + Dify Vision API）
+    - 文档总结（自动上传 + Dify Doc Summary API）
+
+    工具调用完全由 LLM 自主决策，Agent 内部实现 ReAct 循环。
+    """
+
+    def __init__(self):
+        super().__init__(agent_id=AGENT_ID)
+
+    def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        执行通用对话（同步入口，内部运行异步逻辑）。
+
+        input_data 格式:
+          {
+            "query": "用户的问题或指令",
+            "context": {
+              "file_paths": ["..."],     # 可用的本地文件路径列表
+              "metadata": {...},         # A2A 上下文
+              "prior_results": {...},    # 上游 Agent 结果
+            }
+          }
+        """
+        import asyncio
+
+        try:
+            # 尝试获取当前事件循环
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # 已有运行中的循环（FastAPI/uvicorn 环境）
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    result = pool.submit(
+                        asyncio.run, self._execute_async(input_data)
+                    ).result()
+                return result
+            else:
+                return loop.run_until_complete(self._execute_async(input_data))
+        except RuntimeError:
+            return asyncio.run(self._execute_async(input_data))
+
+    async def _execute_async(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """异步执行通用对话与工具调用。"""
+        query = input_data.get("query", "")
+        context = input_data.get("context", {})
+
+        # 收集可用文件路径
+        file_paths = self._collect_file_paths(context)
+
+        # 构建文件上下文描述（注入到 system prompt）
+        file_context_str = self._build_file_context_str(file_paths)
+
+        # 构建 system message
+        system_msg = SystemMessage(content=self._build_system_prompt(file_context_str))
+
+        # 初始化 LLM 并绑定工具
+        llm = _get_chat_llm()
+        llm_with_tools = llm.bind_tools(GENERAL_CHAT_TOOLS)
+
+        # 构建初始消息列表
+        messages: List = [system_msg, HumanMessage(content=query)]
+
+        logger.info(
+            f"[GeneralChat] query={query[:100]}... | "
+            f"files={len(file_paths)} | file_paths={file_paths}"
+        )
+
+        # ReAct 循环: LLM 调用 → 解析 tool_calls → 执行工具 → 反馈 → 再调用
+        for round_idx in range(MAX_TOOL_ROUNDS):
+            response = await llm_with_tools.ainvoke(messages)
+            messages.append(response)
+
+            # 检查是否有工具调用
+            tool_calls = getattr(response, "tool_calls", None) or []
+
+            if not tool_calls:
+                # LLM 未调用任何工具 → 直接返回文本回复
+                final_text = response.content if hasattr(response, "content") else str(response)
+                logger.info(
+                    f"[GeneralChat] 直接回复 (round={round_idx + 1}), "
+                    f"长度={len(final_text)}"
+                )
+                return {
+                    "status": "success",
+                    "result": final_text,
+                    "agent": self.agent_id,
+                }
+
+            # 执行所有工具调用
+            for tc in tool_calls:
+                tool_name = tc["name"]
+                tool_args = tc["args"]
+                tool_call_id = tc["id"]
+
+                logger.info(
+                    f"[GeneralChat] Tool call: {tool_name}({tool_args}) "
+                    f"[round={round_idx + 1}]"
+                )
+
+                # 查找并执行对应的工具
+                tool_result = self._invoke_tool(tool_name, tool_args)
+
+                # 将工具结果作为 ToolMessage 反馈给 LLM
+                messages.append(
+                    ToolMessage(
+                        content=str(tool_result),
+                        tool_call_id=tool_call_id,
+                    )
+                )
+
+        # 达到最大轮次仍未完成，取最后一次 LLM 回复
+        logger.warning(f"[GeneralChat] 达到最大工具调用轮次 ({MAX_TOOL_ROUNDS})")
+        last_response = await llm_with_tools.ainvoke(messages)
+        final_text = last_response.content if hasattr(last_response, "content") else str(last_response)
+
+        return {
+            "status": "success",
+            "result": final_text,
+            "agent": self.agent_id,
+        }
+
+    def _collect_file_paths(self, context: Dict[str, Any]) -> List[str]:
+        """从上下文中收集所有可用的文件路径。"""
+        file_paths = []
+
+        # 1. 直接从 context.file_paths 获取
+        if context.get("file_paths"):
+            file_paths.extend(context["file_paths"])
+
+        # 2. 从 context.file_path 获取（单个文件）
+        if context.get("file_path"):
+            fp = context["file_path"]
+            if fp not in file_paths:
+                file_paths.append(fp)
+
+        # 3. 从 A2A metadata.file_ctx 获取
+        file_ctx = context.get("file_ctx") or context.get("metadata", {}).get("file_ctx") or {}
+        for category in ("images", "documents"):
+            for f in file_ctx.get(category, []):
+                if isinstance(f, dict) and f.get("file_path"):
+                    fp = f["file_path"]
+                    if fp not in file_paths:
+                        file_paths.append(fp)
+
+        return file_paths
+
+    def _build_file_context_str(self, file_paths: List[str]) -> str:
+        """构建文件上下文描述字符串。"""
+        if not file_paths:
+            return "当前没有可用的文件。"
+
+        lines = ["以下是用户上传的文件（你可以通过工具来处理这些文件）:"]
+        for fp in file_paths:
+            ext = os.path.splitext(fp)[1].lower()
+            if ext in (".png", ".jpg", ".jpeg", ".bmp", ".webp", ".gif"):
+                file_type = "图片"
+            elif ext in (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt", ".md", ".csv"):
+                file_type = "文档"
+            else:
+                file_type = "文件"
+            lines.append(f"  - [{file_type}] {fp}")
+
+        return "\n".join(lines)
+
+    def _build_system_prompt(self, file_context_str: str) -> str:
+        """构建 General Chat 的 system prompt。"""
+        return (
+            "你是一个智能通用对话助手。你可以:\n"
+            "1. 回答各种通用问题和进行日常对话\n"
+            "2. 使用 `image_recognition` 工具识别和分析图片（支持 OCR、发票识别、场景分析）\n"
+            "3. 使用 `document_summary` 工具总结和分析文档\n\n"
+
+            "### 工具使用规则:\n"
+            "- 当用户提供了图片文件且需要识别/分析时，调用 `image_recognition` 工具\n"
+            "- 当用户提供了文档文件且需要总结/分析时，调用 `document_summary` 工具\n"
+            "- 工具的 `file_path` 参数必须使用下面「可用文件」中列出的完整路径\n"
+            "- 如果是普通聊天或无需文件处理的问题，直接回复即可，不需要调用任何工具\n\n"
+
+            f"### 可用文件:\n{file_context_str}\n"
+        )
+
+    def _invoke_tool(self, tool_name: str, tool_args: Dict[str, Any]) -> str:
+        """根据工具名称执行对应的工具。"""
+        tool_map = {t.name: t for t in GENERAL_CHAT_TOOLS}
+        tool_fn = tool_map.get(tool_name)
+
+        if tool_fn is None:
+            return f"未知工具: {tool_name}"
+
+        try:
+            return tool_fn.invoke(tool_args)
+        except Exception as e:
+            logger.error(f"[GeneralChat] 工具 {tool_name} 执行失败: {e}")
+            return f"工具执行失败: {e}"

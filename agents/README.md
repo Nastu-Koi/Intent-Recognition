@@ -1,142 +1,207 @@
-# Agents README
+# Agents 开发手册
 
-本目录保存各个 Dify SubAgent 的本地实现。项目采用 A2A-native + LangGraph 编排架构：
+本目录保存各个 Agent 的本地实现。每个 Agent 由 `agent_a2a_service.py` 独立进程加载，对外暴露为 A2A Agent，通过 JSON-RPC 协议与主编排服务通信。
 
-```text
-FastAPI 入口 (main.py)
-  -> RBAC 角色验证 & Agent Card 发现
-  -> LangGraph Planner-Evaluator 循环
-     -> Planner 根据 Agent Card 规划任务
-     -> Workers 通过 A2A JSON-RPC 调用远程 SubAgent
-     -> Evaluator 评估结果 (最多 5 轮迭代)
-     -> Final Reply 综合回复
+## 架构说明
+
 ```
-
-每个 SubAgent 由 `agent_a2a_service.py` 独立进程加载，对外暴露为 A2A Agent。
+┌─────────────────────────────────────────────────┐
+│               agent_a2a_service.py               │
+│                                                   │
+│  A2A_AGENT_ID=xxx A2A_PORT=yyyy                  │
+│                                                   │
+│  启动时:                                           │
+│    1. 加载 agents/<AGENT_ID>/agent_card.yaml       │
+│    2. 动态导入 execution.module.class_name         │
+│    3. 创建 SubAgent 实例                           │
+│    4. 启动 FastAPI 服务:                            │
+│       GET  /health                                 │
+│       GET  /.well-known/agent-card.json            │
+│       POST /a2a/<agent_id>  (JSON-RPC)            │
+│                                                   │
+│  JSON-RPC 方法:                                    │
+│    - message/send  接收任务并执行                   │
+│    - tasks/get     查询任务状态                     │
+└─────────────────────────────────────────────────┘
+```
 
 ## 当前内置 Agent
 
-```text
-dify_file_uploader  -> Dify 文件上传器       -> 默认端口 8101
-dify_doc_summary    -> Dify 文档总结         -> 默认端口 8102
-dify_knowledge_qa   -> Dify 知识库问答       -> 默认端口 8103
-dify_vision         -> Dify 图片识别         -> 默认端口 8104
+| Agent ID | 名称 | 类型 | 端口 | 说明 |
+|----------|------|------|------|------|
+| `general_chat` | 通用对话助手 | 本地 Agent | 8101 | 日常对话 + 图片识别 + 文档总结（内部 ReAct 循环） |
+| `dify_expense_assistant` | 报销助手 | Dify Agent | 8102 | 财务报销政策与流程咨询 |
+
+### general_chat — 通用对话助手
+
+基于 LLM Tool Calling 的本地 Agent，支持内部 ReAct 循环：
+
+```
+输入 + 文件上下文 → LLM(with_tools) ──→ 直接回复（无需工具）
+                                    └──→ 调用工具（图片识别 / 文档总结）
+                                           └──→ 上传到 Dify → Dify API → 结果返回 LLM
+                                                    └──→ 综合生成回复
 ```
 
-### 各 Agent 功能说明
+工具函数封装在 `agents/general_chat/tools.py`：
 
-| Agent ID | 功能 | Dify App 类型 | 依赖 |
-|---|---|---|---|
-| `dify_file_uploader` | 上传文件到 Dify，获取 file_id | Files API | 无 |
-| `dify_doc_summary` | 文档内容智能总结与摘要提取 | Workflow | 可选 file_id |
-| `dify_knowledge_qa` | 基于知识库的企业内部问答 | Chat | 无 |
-| `dify_vision` | 图片识别、OCR、发票识别 | Chat (Vision) | 需要 file_id |
+| 工具 | 功能 | 链路 |
+|------|------|------|
+| `image_recognition` | 图片 OCR / 场景分析 / 发票识别 | 上传到 Dify → Dify Vision API |
+| `document_summary` | 文档总结 / 要点提炼 | 上传到 Dify → Dify Doc Summary API |
 
-### 任务依赖关系
+tools.py 内部自动完成「上传文件到 Dify 获取 file_id → 调用 Dify App」的完整流程。
 
-```text
-用户上传图片 -> dify_file_uploader (获取 file_id) -> dify_vision (识别)
-用户上传文档 -> dify_file_uploader (获取 file_id) -> dify_doc_summary (总结)
-用户提问    -> dify_knowledge_qa (直接问答)
+### dify_expense_assistant — 报销助手
+
+通过 Dify API 调用 Dify Workflow App 提供报销咨询服务。支持 Chat 和 Workflow 两种模式，通过 `DIFY_DIFY_EXPENSE_ASSISTANT_APP_TYPE` 环境变量控制。
+
+## Agent 目录结构
+
 ```
-
-Planner 会自动识别依赖关系：如果需要 file_id 的 Agent，会先调度 dify_file_uploader。
-
-## 单个 Agent 目录结构
-
-```text
-agents/dify_xxx/
-  agent_card.yaml     # 必需：能力声明，转换为 A2A Agent Card
-  subagent.py         # 必需：业务执行器 (继承 DifySubAgent)
-  __init__.py         # 包初始化
+agents/<agent_id>/
+├── agent_card.yaml     # 必需：能力声明（metadata / capabilities / execution 等）
+├── subagent.py         # 必需：业务执行器（继承 DifySubAgent，实现 execute 方法）
+└── __init__.py         # 可选：包标识
 ```
 
 ## 启动方式
 
 ```bash
-# 启动各 SubAgent (各自独立进程)
-A2A_AGENT_ID=dify_file_uploader A2A_PORT=8101 python agent_a2a_service.py
-A2A_AGENT_ID=dify_doc_summary A2A_PORT=8102 python agent_a2a_service.py
-A2A_AGENT_ID=dify_knowledge_qa A2A_PORT=8103 python agent_a2a_service.py
-A2A_AGENT_ID=dify_vision A2A_PORT=8104 python agent_a2a_service.py
+# 启动通用对话助手
+A2A_AGENT_ID=general_chat A2A_PORT=8101 python agent_a2a_service.py
 
-# 启动主编排服务 (LangGraph + FastAPI)
+# 启动报销助手
+A2A_AGENT_ID=dify_expense_assistant A2A_PORT=8102 python agent_a2a_service.py
+
+# 启动主编排服务
 python main.py
 ```
 
-## 如何添加新 Dify Agent
+## 添加新 Agent
 
-### 1. 创建目录
+系统支持两种类型的 Agent，根据需要选择：
+
+### 1. 本地 Agent（纯 Python 实现，不依赖外部服务）
+
+适合不需要 Dify 后端的场景，可以直接在 `execute()` 中编写任意业务逻辑。
+
+**创建目录与能力声明**
 
 ```bash
-mkdir -p agents/dify_new_agent
-touch agents/dify_new_agent/__init__.py
+mkdir -p agents/my_agent
+touch agents/my_agent/__init__.py
 ```
 
-### 2. 创建 agent_card.yaml
+**agent_card.yaml**
 
 ```yaml
 metadata:
-  agent_id: dify_new_agent
-  name: 新 Dify 助手
-  description: "新助手描述"
+  agent_id: my_agent
+  name: 我的助手
+  description: "处理特定业务..."
   version: "1.0.0"
+  category: "general"
 
 capabilities:
   skills:
-    - new_skill
+    - my_skill
   keywords:
-    - 关键词1
+    - 关键词
   intent_patterns:
-    - 新意图
+    - 意图
+  priority: 50
 
 execution:
-  module: "agents.dify_new_agent.subagent"
-  class_name: "DifyNewAgent"
+  module: "agents.my_agent.subagent"
+  class_name: "MyAgent"
   mode: "sync"
-
-scope:
-  - 新业务范围
-
-examples:
-  - 新助手能处理什么问题
 ```
 
-### 3. 创建 subagent.py
+**subagent.py**
+
+```python
+from engine.dify_subagent import DifySubAgent
+
+class MyAgent(DifySubAgent):
+    def __init__(self):
+        super().__init__(agent_id="my_agent")
+
+    def execute(self, input_data):
+        query = input_data.get("query", "")
+        context = input_data.get("context", {})
+        # 业务逻辑...
+        return {"status": "success", "result": "处理结果", "agent": self.agent_id}
+```
+
+### 2. Dify Agent（封装 Dify App）
+
+适合已有 Dify App 的场景，继承 `DifySubAgent` 并调用 `query_dify_app()` 即可。
+
+**subagent.py**
 
 ```python
 from engine.dify_subagent import DifySubAgent
 from engine.dify_client import query_dify_app
 
-class DifyNewAgent(DifySubAgent):
+class MyDifyAgent(DifySubAgent):
     def __init__(self):
-        super().__init__(agent_id="dify_new_agent")
+        super().__init__(agent_id="my_dify_agent")
 
     def execute(self, input_data):
         query = input_data.get("query", "")
+        context = input_data.get("context", {})
         result = query_dify_app(
             agent_id=self.agent_id,
             query=query,
+            inputs=context.get("prior_structured"),
         )
         return {"status": "success", "result": result, "agent": self.agent_id}
 ```
 
-### 4. 注册到 A2A 发现配置
+### 注册到主编排服务
+
+**注册 A2A 发现端点**
 
 编辑 `.config/a2a_agents.yaml`：
 
 ```yaml
 agents:
-  - id: dify_new_agent
-    card_url: "http://127.0.0.1:8105/.well-known/agent-card.json"
+  - id: my_agent
+    card_url: "http://127.0.0.1:8103/.well-known/agent-card.json"
 ```
 
-### 5. 配置 RBAC 权限
+**配置 RBAC 权限**
 
 编辑 `.config/role_permissions.yaml`，将新 Agent 添加到对应角色的 `accessible_agents` 列表。
 
-### 6. 启动
+**启动**
 
 ```bash
-A2A_AGENT_ID=dify_new_agent A2A_PORT=8105 python agent_a2a_service.py
+A2A_AGENT_ID=my_agent A2A_PORT=8103 python agent_a2a_service.py
 ```
+
+重启主编排服务 `python main.py`，即可在 `/agents` 端点和 Planner 的任务规划中看到新 Agent。
+
+## SubAgent 返回值规范
+
+`execute()` 方法必须返回字典，格式如下：
+
+```python
+# 成功
+{"status": "success", "result": "回复文本", "agent": "agent_id"}
+
+# 失败
+{"status": "error", "error": "错误信息", "agent": "agent_id"}
+
+# 成功 + 结构化数据（结果会透传到下游 Agent 的 prior_structured）
+{
+    "status": "success",
+    "result": "回复文本",
+    "agent": "agent_id",
+    "file_id": "xxx",           # 自定义结构化字段
+    "uploaded_files": [...]     # 自定义结构化字段
+}
+```
+
+`status` 为 `success` 时，`result` 将作为 Agent 的回复文本返回。额外的结构化字段（不含 `status` / `result` / `error` / `query` / `agent`）会作为 `structured_output` 透传给后续 Agent 的 `prior_structured`。
