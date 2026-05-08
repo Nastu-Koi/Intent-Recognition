@@ -168,6 +168,7 @@ async def evaluator_node(state: OrchestratorState) -> dict:
         update = {
             "eval_action": eval_result.action,
             "eval_thought": eval_result.thought,
+            "iter": current_iter,
         }
 
         # 累积思维链历史 (自行管理追加)
@@ -193,8 +194,10 @@ async def evaluator_node(state: OrchestratorState) -> dict:
     except Exception as e:
         logger.error(f"[Evaluator Error]: {e}")
         # 降级：直接放行，防止评估失败阻塞管线
+        current_iter = state.get("iter", 1)
         return {
             "eval_action": "PASS",
             "eval_thought": f"评估异常，降级放行: {e}",
             "feedback_history": [],
+            "iter": current_iter,
         }

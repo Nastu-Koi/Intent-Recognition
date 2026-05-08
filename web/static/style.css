@@ -731,6 +731,127 @@ body {
     display: none;
 }
 
+/* ─── Streaming Response Styles ─── */
+.bubble.streaming {
+    background: var(--agent-bubble);
+    border: 1px solid var(--border-subtle);
+}
+
+.streaming-content {
+    min-height: 24px;
+    line-height: 1.6;
+}
+
+.planner-result {
+    padding: 8px 0;
+    border-left: 3px solid var(--accent);
+    padding-left: 12px;
+}
+
+.planner-result .process-label {
+    color: var(--accent-secondary);
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.rationale {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin-bottom: 8px;
+    line-height: 1.5;
+}
+
+.tasks {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.task-item {
+    background: rgba(99, 102, 241, 0.05);
+    padding: 6px 8px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.task-item strong {
+    color: var(--accent-secondary);
+}
+
+.task-item em {
+    display: block;
+    margin-top: 4px;
+    font-style: normal;
+    color: var(--text-muted);
+}
+
+.dispatcher-result {
+    padding: 8px 0;
+    border-left: 3px solid var(--warning);
+    padding-left: 12px;
+}
+
+.agent-executing {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 6px;
+}
+
+.evaluator-result {
+    padding: 8px 0;
+    border-left: 3px solid var(--success);
+    padding-left: 12px;
+}
+
+.evaluator-result .process-label {
+    color: var(--accent-secondary);
+    font-weight: 600;
+    margin-bottom: 8px;
+}
+
+.eval-action {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+    font-weight: 500;
+}
+
+.eval-thought {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+    line-height: 1.5;
+}
+
+.iteration-info {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 4px;
+}
+
+.error-msg {
+    color: var(--error);
+    font-size: 13px;
+    padding: 8px;
+    background: rgba(239, 68, 68, 0.1);
+    border-radius: var(--radius-sm);
+}
+
+.iteration {
+    margin: 8px 0;
+    padding: 8px;
+    background: rgba(99, 102, 241, 0.05);
+    border-radius: var(--radius-sm);
+}
+
+.iteration h4 {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent-secondary);
+    margin-bottom: 4px;
+}
+
 /* ─── Responsive ─── */
 @media (max-width: 640px) {
     .header { padding: 12px 16px; }

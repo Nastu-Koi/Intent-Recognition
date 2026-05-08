@@ -88,7 +88,7 @@ async def final_reply_node(state: OrchestratorState) -> dict:
         return {
             "final_text": final_text,
             "messages": [AIMessage(content=final_text)],
-            "iterations": len(state.get("thinking_chain", [])),
+            "iterations": state.get("iter", 0),
             "plan_rationale": state.get("plan", {}).get("rationale", ""),
             "eval_action": state.get("eval_action", ""),
             "eval_thought": state.get("eval_thought", ""),

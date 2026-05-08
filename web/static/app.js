@@ -83,39 +83,29 @@ async function sendMessage() {
         appendMessage('user', `📎 ${fileNames}`);
     }
 
-    // Show thinking
-    const thinkingEl = showThinking();
+    // Create streaming response container
+    const messageEl = createStreamingMessageElement();
+    const thinkingChain = [];
 
     // Disable input
     sendBtn.disabled = true;
 
     try {
-        let result;
         if (pendingFiles.length > 0) {
-            result = await sendWithFiles(text);
+            await sendWithFilesStream(text, messageEl, thinkingChain);
         } else {
-            result = await sendText(text);
-        }
-
-        // Remove thinking
-        thinkingEl.remove();
-
-        // Show agent response
-        if (result.answer) {
-            appendAgentMessage(result.answer, result);
-        } else if (result.error) {
-            appendMessage('agent', `❌ 错误: ${result.error}`);
+            await sendTextStream(text, messageEl, thinkingChain);
         }
 
         // Update session
-        if (result.session_id) {
+        const sessionIdHeader = messageEl.dataset.sessionId;
+        if (sessionIdHeader) {
             const isNew = !sessionId;
-            sessionId = result.session_id;
-            if (isNew) loadConversations(); // 第一次对话后刷新列表
+            sessionId = sessionIdHeader;
+            if (isNew) loadConversations();
         }
 
     } catch (e) {
-        thinkingEl.remove();
         appendMessage('agent', `❌ 网络错误: ${e.message}`);
     }
 
@@ -128,9 +118,34 @@ async function sendMessage() {
     chatInput.focus();
 }
 
-async function sendText(query) {
+function createStreamingMessageElement() {
+    const msg = document.createElement('div');
+    msg.className = 'message agent';
+
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar';
+    avatar.textContent = '🤖';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble streaming';
+    bubble.innerHTML = `
+        <div class="streaming-content"></div>
+        <div class="process-details"></div>
+    `;
+
+    msg.appendChild(avatar);
+    msg.appendChild(bubble);
+    chatArea.appendChild(msg);
+    scrollToBottom();
+
+    return msg;
+}
+
+async function sendTextStream(query) {
     const role = roleSelect.value || null;
-    const res = await fetch(`${API_BASE}/chat`, {
+    const url = `${API_BASE}/chat-stream`;
+    
+    const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -139,10 +154,11 @@ async function sendText(query) {
             session_id: sessionId,
         }),
     });
-    return await res.json();
+
+    return processStreamResponse(response, arguments[1], arguments[2]);
 }
 
-async function sendWithFiles(query) {
+async function sendWithFilesStream(query) {
     const role = roleSelect.value || null;
     const formData = new FormData();
     formData.append('query', query);
@@ -150,11 +166,218 @@ async function sendWithFiles(query) {
     if (sessionId) formData.append('session_id', sessionId);
     pendingFiles.forEach(f => formData.append('files', f));
 
-    const res = await fetch(`${API_BASE}/chat-with-files`, {
+    const response = await fetch(`${API_BASE}/chat-with-files-stream`, {
         method: 'POST',
         body: formData,
     });
-    return await res.json();
+
+    return processStreamResponse(response, arguments[1], arguments[2]);
+}
+
+async function processStreamResponse(response, messageEl, thinkingChain) {
+    if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    // Get session ID from response header
+    const sessionIdHeader = response.headers.get('X-Session-Id');
+    if (sessionIdHeader) {
+        messageEl.dataset.sessionId = sessionIdHeader;
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let finalAnswer = '';
+    let planRationale = '';
+    let evalAction = '';
+    let evalThought = '';
+    let agentResults = {};
+    let totalIterations = 0;
+
+    const contentEl = messageEl.querySelector('.streaming-content');
+    const detailsEl = messageEl.querySelector('.process-details');
+    let plannerCount = 0;
+
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            
+            // Keep the last incomplete line in the buffer
+            buffer = lines[lines.length - 1];
+
+            for (let i = 0; i < lines.length - 1; i++) {
+                const line = lines[i].trim();
+                
+                if (line.startsWith('event: ')) {
+                    const eventType = line.substring(7);
+                    const dataLine = lines[i + 1];
+                    
+                    if (dataLine && dataLine.startsWith('data: ')) {
+                        try {
+                            const eventData = JSON.parse(dataLine.substring(6));
+                            
+                            switch (eventType) {
+                                case 'start':
+                                    contentEl.innerHTML = '<div class="thinking-dots"><span></span><span></span><span></span></div><div class="thinking-text">开始执行思维链...</div>';
+                                    break;
+
+                                case 'planner':
+                                    plannerCount++;
+                                    planRationale = eventData.rationale;
+                                    const tasksHtml = eventData.tasks.map((t, idx) => 
+                                        `<div class="task-item"><strong>Task ${idx + 1}:</strong> ${escapeHtml(t.target)}<br/><em>${escapeHtml(t.instruction)}</em></div>`
+                                    ).join('');
+                                    
+                                    contentEl.innerHTML = `
+                                        <div class="planner-result">
+                                            <div class="process-label">🧠 规划阶段 (第 ${eventData.iteration} 轮)</div>
+                                            <div class="rationale">${escapeHtml(eventData.rationale)}</div>
+                                            <div class="tasks">${tasksHtml}</div>
+                                        </div>
+                                    `;
+                                    
+                                    // Add to thinking chain
+                                    if (!thinkingChain[plannerCount - 1]) {
+                                        thinkingChain[plannerCount - 1] = {};
+                                    }
+                                    thinkingChain[plannerCount - 1].iteration = eventData.iteration;
+                                    thinkingChain[plannerCount - 1].plan_rationale = planRationale;
+                                    
+                                    break;
+
+                                case 'agent_result':
+                                    agentResults[eventData.agent_id] = eventData.result_preview;
+                                    contentEl.innerHTML = `
+                                        <div class="dispatcher-result">
+                                            <div class="thinking-dots"><span></span><span></span><span></span></div>
+                                            <div class="agent-executing">正在调用 Agent: <strong>${escapeHtml(eventData.agent_id)}</strong></div>
+                                        </div>
+                                    `;
+                                    break;
+
+                                case 'dispatcher':
+                                    contentEl.innerHTML = `
+                                        <div class="dispatcher-result">
+                                            <div class="process-label">📊 Agent 执行阶段</div>
+                                            <div>已完成 ${eventData.agents_count} 个 Agent 的调用</div>
+                                        </div>
+                                    `;
+                                    break;
+
+                                case 'evaluator':
+                                    evalAction = eventData.action;
+                                    evalThought = eventData.thought;
+                                    const actionEmoji = {
+                                        'PASS': '✅',
+                                        'PARTIAL_ACCEPT': '⚠️',
+                                        'NEEDS_REVISION': '🔄'
+                                    }[eventData.action] || '❓';
+                                    
+                                    contentEl.innerHTML = `
+                                        <div class="evaluator-result">
+                                            <div class="process-label">🎯 评估阶段</div>
+                                            <div class="eval-action">${actionEmoji} ${escapeHtml(eventData.action)}</div>
+                                            <div class="eval-thought">${escapeHtml(eventData.thought.substring(0, 200))}</div>
+                                            <div class="iteration-info">迭代: ${eventData.iteration}/${eventData.max_iterations}</div>
+                                        </div>
+                                    `;
+                                    
+                                    // Add to thinking chain
+                                    if (thinkingChain[plannerCount - 1]) {
+                                        thinkingChain[plannerCount - 1].eval_action = evalAction;
+                                        thinkingChain[plannerCount - 1].eval_thought = evalThought;
+                                    }
+                                    
+                                    break;
+
+                                case 'final_reply':
+                                    finalAnswer = eventData.answer;
+                                    planRationale = eventData.plan_rationale;
+                                    evalAction = eventData.eval_action;
+                                    totalIterations = eventData.total_iterations;
+                                    agentResults = eventData.agent_results;
+                                    
+                                    // 使用后端返回的完整思维链替换前端累积的数据
+                                    if (eventData.thinking_chain && eventData.thinking_chain.length > 0) {
+                                        // 清除旧数据，使用后端发送的完整thinking_chain
+                                        thinkingChain = eventData.thinking_chain;
+                                    }
+                                    
+                                    // Clear streaming indicator
+                                    contentEl.innerHTML = formatMarkdown(finalAnswer);
+                                    
+                                    // Build process details
+                                    if (Object.keys(agentResults).length > 0 || planRationale || evalAction) {
+                                        buildProcessDetails(detailsEl, thinkingChain, totalIterations);
+                                    }
+                                    break;
+
+                                case 'done':
+                                    // Final message already shown
+                                    break;
+
+                                case 'error':
+                                    contentEl.innerHTML = `<div class="error-msg">❌ 错误: ${escapeHtml(eventData.message)}</div>`;
+                                    break;
+                            }
+
+                            scrollToBottom();
+                        } catch (e) {
+                            console.error('Error parsing event data:', e);
+                        }
+                    }
+                }
+            }
+        }
+    } finally {
+        reader.releaseLock();
+    }
+}
+
+function buildProcessDetails(detailsEl, thinkingChain, totalIterations) {
+    detailsEl.innerHTML = '';
+
+    const toggle = document.createElement('button');
+    toggle.className = 'process-toggle';
+    // 计算实际有内容的迭代项数
+    const validIterations = thinkingChain.filter(item => item && (item.plan_rationale || item.eval_action)).length;
+    toggle.innerHTML = `<span class="arrow">▶</span> 查看完整 Agent 思考过程 (${validIterations} 轮迭代)`;
+
+    const content = document.createElement('div');
+    content.className = 'process-content';
+
+    toggle.onclick = () => {
+        toggle.classList.toggle('open');
+        content.classList.toggle('open');
+    };
+
+    let html = '';
+    thinkingChain.forEach((item, index) => {
+        if (item && (item.plan_rationale || item.eval_action)) {
+            html += `<div class="iteration"><h4>第 ${item.iteration || index + 1} 轮迭代</h4>`;
+            if (item.plan_rationale) {
+                html += `<div class="process-item"><div class="process-label">🧠 规划思路</div>${escapeHtml(item.plan_rationale)}</div>`;
+            }
+            if (item.eval_action) {
+                const emoji = { PASS: '✅', PARTIAL_ACCEPT: '⚠️', NEEDS_REVISION: '🔄' }[item.eval_action] || '❓';
+                html += `<div class="process-item"><div class="process-label">🎯 评估决策</div>${emoji} ${escapeHtml(item.eval_action)}</div>`;
+            }
+            if (item.eval_thought) {
+                html += `<div class="process-item"><div class="process-label">🧐 评估分析</div>${escapeHtml(item.eval_thought)}</div>`;
+            }
+            html += `</div>`;
+        }
+    });
+
+    content.innerHTML = html || '<div>无可用的思考过程信息</div>';
+    detailsEl.appendChild(toggle);
+    detailsEl.appendChild(content);
 }
 
 // ─── UI Helpers ───
@@ -195,7 +418,8 @@ function appendAgentMessage(text, result) {
 
         const toggle = document.createElement('button');
         toggle.className = 'process-toggle';
-        toggle.innerHTML = `<span class="arrow">▶</span> 查看完整 Agent 思考过程 (${result.thinking_chain.length} 轮迭代)`;
+        const validItems = result.thinking_chain.filter(item => item && (item.plan_rationale || item.eval_action)).length;
+        toggle.innerHTML = `<span class="arrow">▶</span> 查看完整 Agent 思考过程 (${validItems} 轮迭代)`;
         toggle.onclick = () => {
             toggle.classList.toggle('open');
             content.classList.toggle('open');
@@ -454,7 +678,8 @@ function appendThinkingToBubble(bubble, thinking_chain) {
 
     const toggle = document.createElement('button');
     toggle.className = 'process-toggle';
-    toggle.innerHTML = `<span class="arrow">▶</span> View Thought Process (${thinking_chain.length} steps)`;
+    const validItems = thinking_chain.filter(item => item && (item.plan_rationale || item.eval_action)).length;
+    toggle.innerHTML = `<span class="arrow">▶</span> View Thought Process (${validItems} steps)`;
     
     const content = document.createElement('div');
     content.className = 'process-content';

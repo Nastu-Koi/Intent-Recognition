@@ -19,7 +19,7 @@ from typing import Any, Optional, List
 
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, Request
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -31,6 +31,7 @@ from engine.llm_factory import load_env_file
 from engine.a2a import discover_a2a_agent_cards
 from engine.rbac import RoleBasedAccessControl
 from engine.logging_config import get_logger, setup_logging
+from engine.streaming import stream_orchestrator_graph
 from orchestrator.graph import build_graph
 from db.store import ConversationStore
 
@@ -555,6 +556,233 @@ async def chat_with_files(
             status_code=500,
             content={"error": str(e), "session_id": sid},
         )
+
+
+@app.post("/chat-stream")
+async def chat_stream(request: ChatRequest):
+    """
+    流式聊天端点 — 使用 Server-Sent Events (SSE)。
+
+    流程:
+    1. RBAC 验证角色
+    2. 发现并过滤 Agent Cards
+    3. 构建初始 LangGraph State
+    4. 使用 astream 流式执行图
+    5. 实时发送思维链的每个阶段
+
+    响应格式: text/event-stream
+    事件类型:
+    - start: 开始执行
+    - planner: 规划节点完成，包含生成的任务
+    - agent_result: 单个 Agent 执行结果
+    - dispatcher: 所有 Agent 执行完成
+    - evaluator: 评估节点完成，包含决策
+    - final_reply: 最终回复生成
+    - done: 执行完成
+    - error: 错误发生
+    """
+    # 生成或复用 session_id
+    session_id = request.session_id or str(uuid.uuid4())
+
+    # ─── Step 1: RBAC 验证 ───
+    accessible = RBAC.get_accessible_agents(request.role)
+    if accessible is None:
+        error_msg = f"Invalid or missing role: {request.role}"
+        logger.warning(f"[ChatStream] RBAC error: {error_msg}")
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": error_msg,
+                "hint": "Use /roles to see available roles",
+            },
+        )
+
+    # ─── Step 2: 发现并过滤 Agent Cards ───
+    all_cards = _get_agent_cards()
+    filtered_cards = RBAC.filter_cards(all_cards, request.role)
+    available_agents = [_card_to_prompt_dict(c) for c in filtered_cards]
+
+    logger.info(
+        f"[ChatStream] session={session_id} | role={request.role} | "
+        f"agents={[a['agent_id'] for a in available_agents]} | "
+        f"query={request.query[:100]}..."
+    )
+
+    # ─── Step 3: 构建初始 State ───
+    initial_state = {
+        "messages": [HumanMessage(content=request.query)],
+        "query": request.query,
+        "file_ctx": None,
+        "role": request.role or "",
+        "available_agents": available_agents,
+        "plan": {},
+        "results": {},
+        "iter": 0,
+        "feedback_history": [],
+        "eval_action": "",
+        "eval_thought": "",
+        "final_text": "",
+        "thinking_chain": [],
+    }
+
+    # ─── Step 4: 使用 astream 流式执行 ───
+    graph = _get_graph()
+    config = {
+        "configurable": {"thread_id": session_id},
+        "recursion_limit": 25,
+    }
+
+    async def event_generator():
+        """生成 SSE 事件流。"""
+        try:
+            # 流式执行图，实时发送事件
+            async for event_data in stream_orchestrator_graph(graph, initial_state, config):
+                yield event_data
+            
+            # 异步更新会话元数据
+            if _STORE:
+                title = request.query[:40] if len(request.query) > 40 else request.query
+                asyncio.create_task(_STORE.upsert_conversation(
+                    session_id=session_id,
+                    title=title,
+                    role=request.role or "default",
+                    message_count=1
+                ))
+        except Exception as e:
+            logger.error(f"[ChatStream] Error during streaming: {e}", exc_info=True)
+            from engine.streaming import format_sse_response
+            yield format_sse_response("error", {"message": str(e), "status": "error"})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Session-Id": session_id,
+        }
+    )
+
+
+@app.post("/chat-with-files-stream")
+async def chat_with_files_stream(
+    query: str = Form(...),
+    role: Optional[str] = Form(None),
+    session_id: Optional[str] = Form(None),
+    files: List[UploadFile] = File(default=[]),
+):
+    """
+    带文件的流式聊天端点 (multipart/form-data)。
+
+    响应格式: text/event-stream (同 /chat-stream)
+    """
+    sid = session_id or str(uuid.uuid4())
+
+    # 处理文件上传
+    file_ctx = None
+    if files:
+        images = []
+        documents = []
+        for f in files:
+            if f.filename:
+                file_id = str(uuid.uuid4())
+                save_name = f.filename or f"{file_id}.bin"
+                save_path = UPLOAD_DIR / save_name
+
+                with open(save_path, "wb") as out:
+                    content = await f.read()
+                    out.write(content)
+
+                ext_lower = Path(save_name).suffix.lower().lstrip(".")
+                file_info = {
+                    "file_id": file_id,
+                    "file_name": f.filename,
+                    "file_path": str(save_path),
+                }
+
+                if ext_lower in ("png", "jpg", "jpeg", "bmp", "webp", "gif"):
+                    file_info["file_type"] = "image"
+                    images.append(file_info)
+                else:
+                    file_info["file_type"] = "document"
+                    documents.append(file_info)
+
+        if images or documents:
+            file_ctx = {}
+            if images:
+                file_ctx["images"] = images
+            if documents:
+                file_ctx["documents"] = documents
+
+    # RBAC 验证
+    accessible = RBAC.get_accessible_agents(role)
+    if accessible is None:
+        return JSONResponse(
+            status_code=403,
+            content={"error": f"Invalid or missing role: {role}"},
+        )
+
+    # 发现并过滤 Agent Cards
+    all_cards = _get_agent_cards()
+    filtered_cards = RBAC.filter_cards(all_cards, role)
+    available_agents = [_card_to_prompt_dict(c) for c in filtered_cards]
+
+    logger.info(
+        f"[ChatWithFilesStream] session={sid} | role={role} | query={query[:100]}..."
+    )
+
+    # 构建初始 State
+    initial_state = {
+        "messages": [HumanMessage(content=query)],
+        "query": query,
+        "file_ctx": file_ctx,
+        "role": role or "",
+        "available_agents": available_agents,
+        "plan": {},
+        "results": {},
+        "iter": 0,
+        "feedback_history": [],
+        "eval_action": "",
+        "eval_thought": "",
+        "final_text": "",
+        "thinking_chain": [],
+    }
+
+    # 使用 astream 流式执行
+    graph = _get_graph()
+    config = {
+        "configurable": {"thread_id": sid},
+        "recursion_limit": 25,
+    }
+
+    async def event_generator():
+        """生成 SSE 事件流。"""
+        try:
+            async for event_data in stream_orchestrator_graph(graph, initial_state, config):
+                yield event_data
+            
+            if _STORE:
+                title = query[:40] if len(query) > 40 else query
+                asyncio.create_task(_STORE.upsert_conversation(
+                    session_id=sid,
+                    title=title,
+                    role=role or "default",
+                    message_count=1
+                ))
+        except Exception as e:
+            logger.error(f"[ChatWithFilesStream] Error: {e}", exc_info=True)
+            from engine.streaming import format_sse_response
+            yield format_sse_response("error", {"message": str(e), "status": "error"})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Session-Id": sid,
+        }
+    )
 
 
 if __name__ == "__main__":
