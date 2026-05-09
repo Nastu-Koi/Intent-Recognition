@@ -14,6 +14,30 @@ from pydantic import BaseModel, Field
 from langgraph.graph import MessagesState
 
 
+def _merge_file_ctx(
+    old: Optional[Dict[str, Any]], new: Optional[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """
+    Merge reducer for file_ctx.
+
+    If the new value is None (text-only turn), keep the existing file_ctx
+    from the checkpoint so files from earlier turns are not lost.
+    When both exist, accumulate file lists so multi-turn uploads accumulate.
+    """
+    if new is None:
+        return old
+    if old is None:
+        return new
+    merged: Dict[str, Any] = {}
+    for key in ("images", "documents"):
+        old_list = old.get(key) or []
+        new_list = new.get(key) or []
+        combined = old_list + new_list
+        if combined:
+            merged[key] = combined
+    return merged if merged else None
+
+
 # ──────────────────────────────────────────────
 # Pydantic Models (结构化输出约束)
 # ──────────────────────────────────────────────
@@ -82,7 +106,7 @@ class OrchestratorState(MessagesState):
 
     # 不可变输入上下文
     query: str                                                  # 当前轮次用户输入
-    file_ctx: Optional[Dict[str, Any]]                          # 文件上下文
+    file_ctx: Annotated[Optional[Dict[str, Any]], _merge_file_ctx]  # 文件上下文 (合并 reducer，多轮不丢失)
     role: str                                                   # 用户角色
     available_agents: List[Dict[str, Any]]                      # 可用 Agent 描述列表
 
