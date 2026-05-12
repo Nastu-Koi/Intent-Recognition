@@ -1,7 +1,7 @@
 """
-Dify SubAgent 轻量基类 (不依赖 LangGraph SubAgent 重型基础设施)。
+SubAgent 轻量基类 (不依赖 LangGraph SubAgent 重型基础设施)。
 
-直接通过 DifyClient 调用 Dify API，适合简单的 Dify App 封装。
+所有 Agent 执行器继承此类，实现 `execute(input_data)` 即可。
 """
 
 from typing import Dict, Any
@@ -11,12 +11,11 @@ from engine.logging_config import get_logger
 logger = get_logger(__name__)
 
 
-class DifySubAgent:
+class SubAgent:
     """
-    Dify SubAgent 基类。
+    SubAgent 基类 — 所有 Agent 执行器的公共父类。
 
-    子类只需要实现 `execute(input_data)` 即可，
-    或者直接使用 `DifySubAgent` 并传入 agent_id 和 app_type。
+    子类只需要实现 `execute(input_data)` 即可。
     """
 
     def __init__(self, agent_id: str):

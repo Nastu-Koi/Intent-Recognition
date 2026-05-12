@@ -207,7 +207,7 @@ Intent-Recognition/
 │   ├── agent_cards.py               #   Agent Card 管理器：缓存、刷新、索引
 │   ├── agent_card_loader.py         #   Agent Card 加载器：本地 YAML 发现 + SubAgent 动态导入
 │   ├── dify_client.py               #   Dify API 客户端：Chat / Workflow / Retrieval
-│   ├── dify_subagent.py             #   Dify SubAgent 基类（异常处理封装）
+│   ├── subagent.py             #   SubAgent 基类（异常处理封装）
 │   ├── rbac.py                      #   RBAC：YAML 配置加载 → 角色验证 → Agent 过滤
 │   └── logging_config.py            #   日志系统：文件 + 控制台双输出，支持 LOG_LEVEL 控制
 │
@@ -653,9 +653,9 @@ touch agents/my_agent/__init__.py
 
 ```python
 # agents/my_agent/subagent.py
-from engine.dify_subagent import DifySubAgent
+from engine.subagent import SubAgent
 
-class MyAgent(DifySubAgent):
+class MyAgent(SubAgent):
     def __init__(self):
         super().__init__(agent_id="my_agent")
 
@@ -688,13 +688,13 @@ A2A_AGENT_ID=my_agent A2A_PORT=8103 python agent_a2a_service.py
 
 #### 添加新 Dify Agent
 
-与本地 Agent 步骤类似，执行器继承 `DifySubAgent` 并调用 `query_dify_app()`：
+与本地 Agent 步骤类似，执行器继承 `SubAgent` 并调用 `query_dify_app()`：
 
 ```python
-from engine.dify_subagent import DifySubAgent
+from engine.subagent import SubAgent
 from engine.dify_client import query_dify_app
 
-class MyDifyAgent(DifySubAgent):
+class MyDifyAgent(SubAgent):
     def __init__(self):
         super().__init__(agent_id="my_dify_agent")
 

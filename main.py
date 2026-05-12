@@ -159,6 +159,27 @@ def _get_graph():
     return _GRAPH
 
 
+async def _get_checkpoint_file_ctx(session_id: str) -> Optional[Dict[str, Any]]:
+    """
+    从已有 checkpoint 中加载 file_ctx，用于多轮对话中保留文件上下文。
+
+    当文本端点（无新文件上传）被调用时，从上一轮 checkpoint 中恢复 file_ctx，
+    避免因 initial_state 中 file_ctx=None 而丢失多轮文件信息。
+    """
+    if not _CHECKPOINTER or not session_id:
+        return None
+    try:
+        checkpoint_tuple = await _CHECKPOINTER.aget_tuple(
+            {"configurable": {"thread_id": session_id}}
+        )
+        if checkpoint_tuple:
+            channel_values = checkpoint_tuple.checkpoint.get("channel_values", {})
+            return channel_values.get("file_ctx")
+    except Exception:
+        pass
+    return None
+
+
 # ──────────────────────────────────────────────
 # Request / Response Models
 # ──────────────────────────────────────────────
@@ -431,10 +452,13 @@ async def chat(request: ChatRequest):
     )
 
     # ─── Step 3: 构建初始 State ───
+    # 多轮对话：从 checkpoint 恢复 file_ctx，避免文本轮次丢失文件上下文
+    file_ctx = await _get_checkpoint_file_ctx(session_id)
+
     initial_state = {
         "messages": [HumanMessage(content=request.query)],
         "query": request.query,
-        "file_ctx": None,  # 文件通过 /upload 上传后通过 chat_with_files 传入
+        "file_ctx": file_ctx,
         "role": request.role or "",
         "available_agents": available_agents,
         "plan": {},
@@ -543,6 +567,10 @@ async def chat_with_files(
                 file_ctx["images"] = images
             if documents:
                 file_ctx["documents"] = documents
+
+    # 多轮对话：若本轮未上传文件，从 checkpoint 恢复 file_ctx
+    if file_ctx is None and session_id:
+        file_ctx = await _get_checkpoint_file_ctx(session_id)
 
     # RBAC 验证
     accessible = RBAC.get_accessible_agents(role)
@@ -671,10 +699,13 @@ async def chat_stream(request: ChatRequest):
     )
 
     # ─── Step 3: 构建初始 State ───
+    # 多轮对话：从 checkpoint 恢复 file_ctx，避免文本轮次丢失文件上下文
+    file_ctx = await _get_checkpoint_file_ctx(session_id)
+
     initial_state = {
         "messages": [HumanMessage(content=request.query)],
         "query": request.query,
-        "file_ctx": None,
+        "file_ctx": file_ctx,
         "role": request.role or "",
         "available_agents": available_agents,
         "plan": {},
@@ -778,6 +809,10 @@ async def chat_with_files_stream(
                 file_ctx["images"] = images
             if documents:
                 file_ctx["documents"] = documents
+
+    # 多轮对话：若本轮未上传文件，从 checkpoint 恢复 file_ctx
+    if file_ctx is None and session_id:
+        file_ctx = await _get_checkpoint_file_ctx(session_id)
 
     # RBAC 验证
     accessible = RBAC.get_accessible_agents(role)

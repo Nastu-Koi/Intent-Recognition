@@ -13,7 +13,7 @@ import os
 from typing import Dict, Any, List
 
 from engine.dify_client import query_dify_app
-from engine.dify_subagent import DifySubAgent
+from engine.subagent import SubAgent
 from engine.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -21,7 +21,7 @@ logger = get_logger(__name__)
 AGENT_ID = "dify_expense_assistant"
 
 
-class DifyExpenseAssistantAgent(DifySubAgent):
+class DifyExpenseAssistantAgent(SubAgent):
     """
     调用 Dify Workflow/Chat App 提供报销助手服务。
 
