@@ -469,6 +469,7 @@ async def chat(request: ChatRequest):
         "eval_thought": "",
         "final_text": "",
         "thinking_chain": [],
+        "conversation_route": {},
     }
 
     # ─── Step 4: 执行 LangGraph 图 ───
@@ -600,6 +601,7 @@ async def chat_with_files(
         "eval_thought": "",
         "final_text": "",
         "thinking_chain": [],
+        "conversation_route": {},
     }
 
     # 执行 LangGraph 图
@@ -716,6 +718,7 @@ async def chat_stream(request: ChatRequest):
         "eval_thought": "",
         "final_text": "",
         "thinking_chain": [],
+        "conversation_route": {},
     }
 
     # ─── Step 4: 使用 astream 流式执行 ───
@@ -846,6 +849,7 @@ async def chat_with_files_stream(
         "eval_thought": "",
         "final_text": "",
         "thinking_chain": [],
+        "conversation_route": {},
     }
 
     # 使用 astream 流式执行

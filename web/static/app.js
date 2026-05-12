@@ -327,6 +327,24 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                     contentEl.innerHTML = '<div class="thinking-dots"><span></span><span></span><span></span></div><div class="thinking-text">开始执行思维链...</div>';
                                     break;
 
+                                case 'conversation_router':
+                                    if (eventData.relation === 'ambiguous') {
+                                        contentEl.innerHTML = `
+                                            <div class="feedback-eval">
+                                                <div class="eval-header">需要更多信息</div>
+                                                <div class="eval-details">
+                                                    <p>${escapeHtml(eventData.clarification_question || '可以再补充一点背景吗？')}</p>
+                                                </div>
+                                            </div>
+                                        `;
+                                    } else {
+                                        const routeText = eventData.relation === 'related'
+                                            ? `识别为关联输入：${eventData.related_type || 'related'}`
+                                            : '识别为新对话';
+                                        contentEl.innerHTML = `<div class="thinking-text">${escapeHtml(routeText)}</div>`;
+                                    }
+                                    break;
+
                                 case 'planner':
                                     plannerCount++;
                                     planRationale = eventData.rationale;

@@ -36,6 +36,24 @@ async def final_reply_node(state: OrchestratorState) -> dict:
     llm = _get_reply_llm()
 
     query = state.get("query", "")
+    route = state.get("conversation_route") or {}
+    if route.get("relation") == "ambiguous":
+        final_text = (
+            state.get("final_text")
+            or route.get("clarification_question")
+            or "我还需要更多信息才能判断你想继续上一轮，还是开始一个新问题。可以再补充一点背景吗？"
+        )
+        return {
+            "final_text": final_text,
+            "messages": [AIMessage(content=final_text)],
+            "iterations": state.get("iter", 0),
+            "plan_rationale": "",
+            "eval_action": "AMBIGUOUS",
+            "eval_thought": route.get("rationale", ""),
+            "agent_results": {},
+            "thinking_chain": state.get("thinking_chain", []),
+        }
+
     results = state.get("results", {})
 
     # ─── 组装 Agent 研报 ───
@@ -48,8 +66,11 @@ async def final_reply_node(state: OrchestratorState) -> dict:
     else:
         reports = "No background reports generated."
 
-    # 获取对话历史
-    messages = state.get("messages", [])
+    # 获取对话历史。not_related 时只看当前轮，避免旧会话污染新对话。
+    if route.get("relation") == "not_related":
+        messages = []
+    else:
+        messages = state.get("messages", [])
 
     # 获取可用 Agent 信息用于来源归因
     available_agents = state.get("available_agents", [])
@@ -74,6 +95,7 @@ async def final_reply_node(state: OrchestratorState) -> dict:
             "3. **直接对话**: 如果『内部专家累积研报详情』为空，直接利用对话历史进行友好回复。\n"
             "4. **专业性**: 整合多轮迭代的情报，不要暴露内部任务调度的技术细节。\n\n"
             f"=== 内部专家累积研报详情 ===\n{reports}\n==============================\n"
+            f"\n=== Conversation Router ===\n{route}\n===========================\n"
         )
     )
 

@@ -86,8 +86,12 @@ async def evaluator_node(state: OrchestratorState) -> dict:
             "请适当放宽评估标准 — 只要核心任务已完成（≥70%），即可选择 PARTIAL_ACCEPT 放行。\n"
         )
 
-    # 包含完整的对话历史
-    messages = state.get("messages", [])
+    # 包含完整的对话历史；新话题只评估当前轮，避免旧上下文污染判断。
+    route = state.get("conversation_route") or {}
+    if route.get("relation") == "not_related":
+        messages = [HumanMessage(content=query)]
+    else:
+        messages = state.get("messages", [])
 
     system_msg = SystemMessage(
         content=(

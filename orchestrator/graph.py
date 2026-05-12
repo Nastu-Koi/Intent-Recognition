@@ -2,7 +2,7 @@
 LangGraph 图定义与编译。
 
 流程:
-  START → planner →(有tasks)→ dispatcher → sub agents→ evaluator →(PASS/PARTIAL)→ final_reply → END
+  START → conversation_router → context mutation → planner →(有tasks)→ dispatcher → sub agents→ evaluator →(PASS/PARTIAL)→ final_reply → END
                   →(无tasks)→ final_reply → END
                                             →(NEEDS_REVISION, iter<5)→ planner (循环)
 """
@@ -10,6 +10,7 @@ LangGraph 图定义与编译。
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from orchestrator.state import OrchestratorState
+from orchestrator.nodes.conversation_router import conversation_router_node
 from orchestrator.nodes.planner import planner_node
 from orchestrator.nodes.dispatcher import dispatcher_node
 from orchestrator.nodes.evaluator import evaluator_node, MAX_ITER
@@ -17,6 +18,16 @@ from orchestrator.nodes.final_reply import final_reply_node
 from engine.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+
+def route_after_conversation_router(state: OrchestratorState) -> str:
+    """Conversation Router 之后的条件路由。"""
+    route = state.get("conversation_route") or {}
+    relation = route.get("relation")
+    if relation == "ambiguous":
+        logger.info("[Router] Conversation ambiguous, asking user for more info")
+        return "final_reply"
+    return "planner"
 
 
 def route_after_planner(state: OrchestratorState) -> str:
@@ -75,33 +86,41 @@ def build_graph(checkpointer=None) -> StateGraph:
     workflow = StateGraph(OrchestratorState)
 
     # ─── 注册节点 ───
+    workflow.add_node("conversation_router", conversation_router_node)
     workflow.add_node("planner", planner_node)
     workflow.add_node("dispatcher", dispatcher_node)
     workflow.add_node("evaluator", evaluator_node)
     workflow.add_node("final_reply", final_reply_node)
 
     # ─── 编排边 ───
-    # 1. 入口 → Planner
-    workflow.add_edge(START, "planner")
+    # 1. 入口 → Conversation Router
+    workflow.add_edge(START, "conversation_router")
 
-    # 2. Planner →(条件路由)→ Dispatcher 或 Final_Reply
+    # 2. Conversation Router → Planner 或 Final_Reply (ambiguous)
+    workflow.add_conditional_edges(
+        "conversation_router",
+        route_after_conversation_router,
+        ["planner", "final_reply"]
+    )
+
+    # 3. Planner →(条件路由)→ Dispatcher 或 Final_Reply
     workflow.add_conditional_edges(
         "planner",
         route_after_planner,
         ["dispatcher", "final_reply"]
     )
 
-    # 3. Dispatcher → Evaluator
+    # 4. Dispatcher → Evaluator
     workflow.add_edge("dispatcher", "evaluator")
 
-    # 4. Evaluator →(条件路由)→ final_reply 或 planner (反馈循环)
+    # 5. Evaluator →(条件路由)→ final_reply 或 planner (反馈循环)
     workflow.add_conditional_edges(
         "evaluator",
         route_after_eval,
         ["final_reply", "planner"]
     )
 
-    # 5. Final_Reply → END
+    # 6. Final_Reply → END
     workflow.add_edge("final_reply", END)
 
     # ─── 编译 ───

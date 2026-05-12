@@ -79,6 +79,39 @@ class EvalResult(BaseModel):
     )
 
 
+class ConversationRouteResult(BaseModel):
+    """Conversation Router 的结构化判断结果。"""
+    relation: Literal["related", "not_related", "ambiguous"] = Field(
+        description="当前用户输入与上一轮对话的关系。"
+    )
+    related_type: Literal["supplement", "correction", "overturn", "none"] = Field(
+        default="none",
+        description="仅 relation=related 时使用：补充、纠正、推翻上一轮上下文。"
+    )
+    confidence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="判断置信度，0 到 1。"
+    )
+    rationale: str = Field(
+        default="",
+        description="简要解释判断依据。"
+    )
+    context_note: str = Field(
+        default="",
+        description="给后续 Planner/Responder 的上下文变异说明。"
+    )
+    standalone_query: str = Field(
+        default="",
+        description="结合上下文后改写出的当前轮完整问题；not_related 时为原始新问题。"
+    )
+    clarification_question: str = Field(
+        default="",
+        description="ambiguous 时返回给用户的澄清问题。"
+    )
+
+
 # ──────────────────────────────────────────────
 # LangGraph State (全局状态字典)
 # ──────────────────────────────────────────────
@@ -120,3 +153,4 @@ class OrchestratorState(MessagesState):
     eval_thought: str                                           # Evaluator 的最新思考过程
     final_text: str                                             # Final_Reply 的输出
     thinking_chain: List[Dict[str, Any]]                        # 完整思维链历史
+    conversation_route: Dict[str, Any]                           # Conversation Router 打标结果

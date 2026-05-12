@@ -205,8 +205,33 @@ async def planner_node(state: OrchestratorState) -> dict:
         )
     )
 
-    # 包含完整的对话历史
-    messages = state.get("messages", [])
+    # Conversation Router 上下文变异结果
+    route = state.get("conversation_route") or {}
+    relation = route.get("relation")
+    context_note = route.get("context_note") or route.get("rationale") or ""
+    effective_query = state.get("query", "")
+    if relation == "related":
+        system_msg.content += (
+            "\n\n### Conversation Router / Context Mutation Layer\n"
+            f"- relation: related\n"
+            f"- related_type: {route.get('related_type', 'none')}\n"
+            f"- effective_query: {effective_query}\n"
+            f"- context_note: {context_note}\n"
+            "请将该说明视为对上一轮上下文的补充/纠正/推翻，并据此规划当前轮任务。\n"
+        )
+    elif relation == "not_related":
+        system_msg.content += (
+            "\n\n### Conversation Router / Context Mutation Layer\n"
+            "- relation: not_related\n"
+            "当前输入开启新对话。规划时只使用当前用户输入和当前可用文件，不要继承上一轮任务目标或 Agent 结果。\n"
+        )
+
+    # related 保留完整历史；not_related 只保留当前轮，避免旧上下文污染新对话
+    all_messages = state.get("messages", [])
+    if relation == "not_related":
+        messages = [HumanMessage(content=state.get("query", ""))]
+    else:
+        messages = all_messages
 
     try:
         if structured_llm is not None:

@@ -52,7 +52,21 @@ async def _yield_graph_event(
 ) -> AsyncGenerator[tuple[str, str | None], None]:
     """Convert one LangGraph update into SSE events."""
     for node_name, node_output in event.items():
-        if node_name == "planner":
+        if node_name == "conversation_router":
+            route = node_output.get("conversation_route", {}) if isinstance(node_output, dict) else {}
+            yield StreamEvent(
+                "conversation_router",
+                {
+                    "relation": route.get("relation", ""),
+                    "related_type": route.get("related_type", "none"),
+                    "confidence": route.get("confidence", 0),
+                    "rationale": route.get("rationale", ""),
+                    "context_note": route.get("context_note", ""),
+                    "clarification_question": route.get("clarification_question", ""),
+                }
+            ).to_sse_format(), "conversation_router"
+
+        elif node_name == "planner":
             iteration_count = node_output.get("iter", 0)
 
             plan = node_output.get("plan", {})
