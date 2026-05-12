@@ -32,6 +32,7 @@ capabilities:
     - 报销单
     - 费用报销
     - 发票抬头
+    - 报销系统手册
   
   intent_patterns:
     - expense_report          # 英文意图标识
@@ -40,6 +41,11 @@ capabilities:
     - 差旅费怎么报
     - 发票要求
     - 项目Code选择
+    - 报销手册
+    - 报销文档
+    - 报销系统说明
+    - 报销指南
+    - 报销系统有手册吗
   
   confidence_threshold: 0.6
   priority: 70

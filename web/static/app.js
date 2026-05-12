@@ -222,6 +222,56 @@ async function sendWithFilesStream(query) {
     return processStreamResponse(response, arguments[1], arguments[2]);
 }
 
+function ensureDispatcherProgress(contentEl) {
+    let dispatcherResult = contentEl.querySelector('.dispatcher-result');
+    if (!dispatcherResult) {
+        contentEl.innerHTML = `
+            <div class="dispatcher-result">
+                <div class="process-label">📊 Agent 执行阶段</div>
+                <div class="agent-list"></div>
+            </div>
+        `;
+        dispatcherResult = contentEl.querySelector('.dispatcher-result');
+    }
+    return dispatcherResult;
+}
+
+function upsertAgentProgress(contentEl, eventData) {
+    const dispatcherResult = ensureDispatcherProgress(contentEl);
+    const agentList = dispatcherResult.querySelector('.agent-list');
+    const agentId = eventData.agent_id || '';
+    const agentName = eventData.agent_name || agentId;
+    let agentItem = Array.from(agentList.children).find(el => el.dataset.agentId === agentId);
+
+    if (!agentItem) {
+        agentItem = document.createElement('div');
+        agentItem.className = 'agent-item';
+        agentItem.dataset.agentId = agentId;
+        agentItem.innerHTML = `
+            <div class="agent-executing"></div>
+            <div class="agent-result-preview"></div>
+        `;
+        agentList.appendChild(agentItem);
+    }
+
+    const statusEl = agentItem.querySelector('.agent-executing');
+    const previewEl = agentItem.querySelector('.agent-result-preview');
+    const statusLabel = {
+        started: '⏳ 正在调用 Agent',
+        completed: '✓ 已完成 Agent',
+        skipped: '⚠️ 已跳过 Agent',
+    }[eventData.status] || '• Agent 状态更新';
+
+    statusEl.innerHTML = `${statusLabel}: <strong>${escapeHtml(agentName)}</strong>`;
+    agentItem.classList.toggle('running', eventData.status === 'started');
+    agentItem.classList.toggle('completed', eventData.status === 'completed');
+
+    const preview = eventData.result_preview || eventData.message || eventData.instruction || '';
+    if (preview) {
+        previewEl.textContent = preview;
+    }
+}
+
 
 async function processStreamResponse(response, messageEl, thinkingChain) {
     if (!response.ok) {
@@ -244,6 +294,7 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
     let agentResults = {};
     let totalIterations = 0;
     let currentState = null; // For paused context
+    let accumulatedContent = ''; // 累积所有已显示过的内容
 
     const contentEl = messageEl.querySelector('.streaming-content');
     const detailsEl = messageEl.querySelector('.process-details');
@@ -279,6 +330,7 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                 case 'planner':
                                     plannerCount++;
                                     planRationale = eventData.rationale;
+                                    accumulatedContent = `规划阶段 (第 ${eventData.iteration} 轮)\n${eventData.rationale}`; // 累积规划思考过程
                                     const tasksHtml = eventData.tasks.map((t, idx) => 
                                         `<div class="task-item"><strong>Task ${idx + 1}:</strong> ${escapeHtml(t.target)}<br/><em>${escapeHtml(t.instruction)}</em></div>`
                                     ).join('');
@@ -300,23 +352,53 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                     
                                     break;
 
+                                case 'dispatcher_progress':
+                                    const dispatcherProgress = ensureDispatcherProgress(contentEl);
+                                    let progressSummary = dispatcherProgress.querySelector('.dispatcher-progress-summary');
+                                    if (!progressSummary) {
+                                        progressSummary = document.createElement('div');
+                                        progressSummary.className = 'dispatcher-progress-summary';
+                                        dispatcherProgress.insertBefore(progressSummary, dispatcherProgress.querySelector('.agent-list'));
+                                    }
+                                    if (eventData.status === 'started') {
+                                        progressSummary.textContent = `正在调度 ${eventData.tasks_count || 0} 个 Agent...`;
+                                    } else if (eventData.status === 'completed') {
+                                        progressSummary.textContent = `Agent 调度完成，共 ${eventData.agents_count || 0} 个结果`;
+                                    }
+                                    break;
+
+                                case 'agent_progress':
+                                    upsertAgentProgress(contentEl, eventData);
+                                    if (eventData.status === 'completed' && eventData.result_preview) {
+                                        const progressAgentName = eventData.agent_name || eventData.agent_id;
+                                        accumulatedContent += `\n\nAgent: ${progressAgentName}\n${eventData.result_preview}`;
+                                    }
+                                    break;
+
                                 case 'agent_result':
                                     agentResults[eventData.agent_id] = eventData.result_preview;
-                                    contentEl.innerHTML = `
-                                        <div class="dispatcher-result">
-                                            <div class="thinking-dots"><span></span><span></span><span></span></div>
-                                            <div class="agent-executing">正在调用 Agent: <strong>${escapeHtml(eventData.agent_id)}</strong></div>
-                                        </div>
-                                    `;
+                                    const agentName = eventData.agent_name || eventData.agent_id;
+                                    upsertAgentProgress(contentEl, {
+                                        agent_id: eventData.agent_id,
+                                        agent_name: agentName,
+                                        status: 'completed',
+                                        result_preview: eventData.result_preview,
+                                    });
                                     break;
 
                                 case 'dispatcher':
-                                    contentEl.innerHTML = `
-                                        <div class="dispatcher-result">
-                                            <div class="process-label">📊 Agent 执行阶段</div>
-                                            <div>已完成 ${eventData.agents_count} 个 Agent 的调用</div>
-                                        </div>
-                                    `;
+                                    // 更新 dispatcher 摘要信息（追加而不覆盖）
+                                    const dispatcherResult = contentEl.querySelector('.dispatcher-result');
+                                    if (dispatcherResult) {
+                                        const summaryDiv = dispatcherResult.querySelector('.dispatcher-summary') || 
+                                                          (() => {
+                                                              const div = document.createElement('div');
+                                                              div.className = 'dispatcher-summary';
+                                                              dispatcherResult.appendChild(div);
+                                                              return div;
+                                                          })();
+                                        summaryDiv.innerHTML = `<div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-color);">已完成 ${eventData.agents_count} 个 Agent 的调用</div>`;
+                                    }
                                     break;
 
                                 case 'evaluator':
@@ -353,6 +435,7 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
 
                                 case 'final_reply':
                                     finalAnswer = eventData.answer;
+                                    accumulatedContent = finalAnswer; // 最终回答是最重要的内容
                                     planRationale = eventData.plan_rationale;
                                     evalAction = eventData.eval_action;
                                     totalIterations = eventData.total_iterations;
@@ -431,6 +514,45 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
         throw e;
     } finally {
         reader.releaseLock();
+        
+        // 保存前端收集的内容到后端（即使被中止也能保存）
+        if (messageEl.dataset.sessionId) {
+            try {
+                const sessionId = messageEl.dataset.sessionId;
+                
+                // 优先级：finalAnswer > accumulatedContent > DOM 文本
+                let partialReply = finalAnswer || accumulatedContent;
+                
+                if (!partialReply) {
+                    // 从 contentEl 中提取所有文本（包括嵌套的文本）
+                    partialReply = contentEl.innerText || contentEl.textContent || '';
+                }
+                
+                // 清理和处理提取的文本
+                partialReply = partialReply.trim();
+                
+                if (partialReply.length > 0) {
+                    console.log('[SavePartialReply] Saving content:', { 
+                        length: partialReply.length, 
+                        source: finalAnswer ? 'finalAnswer' : (accumulatedContent ? 'accumulatedContent' : 'DOM'),
+                        sessionId 
+                    });
+                    
+                    fetch(`${API_BASE}/conversations/${sessionId}/save-partial-reply`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ partial_reply: partialReply })
+                    }).then(r => {
+                        if (r.ok) console.log('[SavePartialReply] ✅ Success');
+                        else console.warn('[SavePartialReply] ❌ Server error:', r.status);
+                    }).catch(err => console.warn('[SavePartialReply] ❌ Network failed:', err));
+                } else {
+                    console.log('[SavePartialReply] ⚠️ No content to save (finalAnswer, accumulatedContent, DOM all empty)');
+                }
+            } catch (err) {
+                console.warn('[SavePartialReply] ❌ Exception:', err);
+            }
+        }
     }
 }
 
@@ -694,6 +816,15 @@ function renderConversationList(conversations) {
         
         info.appendChild(title);
         info.appendChild(meta);
+        
+        // 显示保存的回答预览（在 meta 之后）
+        if (conv.last_reply) {
+            const preview = document.createElement('div');
+            preview.className = 'conv-preview';
+            preview.textContent = conv.last_reply.substring(0, 100) + (conv.last_reply.length > 100 ? '...' : '');
+            info.appendChild(preview);
+        }
+        
         item.appendChild(info);
         item.appendChild(delBtn);
         conversationList.appendChild(item);

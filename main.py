@@ -317,6 +317,62 @@ async def get_conversation_history(session_id: str):
     }
 
 
+@app.post("/conversations/{session_id}/save-partial-reply")
+async def save_partial_reply(session_id: str, request: Request):
+    """
+    保存前端收集的部分回答文本（当流被中止时调用）。
+    
+    Body: { "partial_reply": "..." }
+    """
+    if not _STORE:
+        return JSONResponse(status_code=400, content={"error": "Persistence not enabled"})
+    
+    try:
+        body = await request.json()
+        partial_reply = body.get("partial_reply", "")
+        
+        logger.info(f"[SavePartialReply] Received partial reply for {session_id}: {len(partial_reply)} chars")
+        
+        # 直接更新 conversation_metadata 中的 last_reply
+        async with _STORE.pool.connection() as conn:
+            async with conn.cursor() as cur:
+                # 只更新 last_reply 和 updated_at，不修改其他字段
+                await cur.execute("""
+                    UPDATE conversation_metadata
+                    SET last_reply = %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE session_id = %s;
+                """, (partial_reply[:200], session_id))  # 截取前 200 字
+                await conn.commit()
+                
+                # 验证更新是否成功
+                await cur.execute("SELECT last_reply FROM conversation_metadata WHERE session_id = %s;", (session_id,))
+                result = await cur.fetchone()
+                if result:
+                    logger.info(f"[SavePartialReply] Verified: saved {len(result[0] or '')} chars")
+        
+        return {"status": "success", "saved_length": len(partial_reply)}
+    except Exception as e:
+        logger.error(f"[SavePartialReply] Error: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/conversations/{session_id}/last-reply")
+async def get_last_reply(session_id: str):
+    """查询保存的 last_reply (用于调试)。"""
+    if not _STORE:
+        return {"last_reply": ""}
+    
+    try:
+        async with _STORE.pool.connection() as conn:
+            async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+                await cur.execute("SELECT last_reply FROM conversation_metadata WHERE session_id = %s;", (session_id,))
+                result = await cur.fetchone()
+                return {"last_reply": result["last_reply"] if result else ""}
+    except Exception as e:
+        logger.error(f"[GetLastReply] Error: {e}")
+        return {"last_reply": ""}
+
+
 @app.delete("/conversations/{session_id}")
 async def delete_conversation(session_id: str):
     """彻底删除会话。"""
@@ -406,11 +462,14 @@ async def chat(request: ChatRequest):
             # 摘要取用户输入前 40 字
             title = request.query[:40] if len(request.query) > 40 else request.query
             messages = result.get("messages", [])
+            final_text = result.get("final_text", "")
+            last_reply = final_text[:200] if final_text else ""
             asyncio.create_task(_STORE.upsert_conversation(
                 session_id=session_id,
                 title=title,
                 role=request.role or "default",
-                message_count=len(messages)
+                message_count=len(messages),
+                last_reply=last_reply
             ))
 
         return ChatResponse(
@@ -529,11 +588,14 @@ async def chat_with_files(
         if _STORE:
             title = query[:40] if len(query) > 40 else query
             messages = result.get("messages", [])
+            final_text = result.get("final_text", "")
+            last_reply = final_text[:200] if final_text else ""
             asyncio.create_task(_STORE.upsert_conversation(
                 session_id=sid,
                 title=title,
                 role=role or "default",
-                message_count=len(messages)
+                message_count=len(messages),
+                last_reply=last_reply
             ))
 
         return {
@@ -638,20 +700,23 @@ async def chat_stream(request: ChatRequest):
             # 流式执行图，实时发送事件
             async for event_data in stream_orchestrator_graph(graph, initial_state, config):
                 yield event_data
-            
-            # 异步更新会话元数据
+        except Exception as e:
+            logger.error(f"[ChatStream] Error during streaming: {e}", exc_info=True)
+            from engine.streaming import format_sse_response
+            yield format_sse_response("error", {"message": str(e), "status": "error"})
+        finally:
+            # 无论是正常完成还是异常中断，都要保存对话元数据
+            # （实际的回答内容由前端通过 /save-partial-reply 端点保存）
             if _STORE:
                 title = request.query[:40] if len(request.query) > 40 else request.query
                 asyncio.create_task(_STORE.upsert_conversation(
                     session_id=session_id,
                     title=title,
                     role=request.role or "default",
-                    message_count=1
+                    message_count=1,
+                    last_reply=""  # 由前端负责更新
                 ))
-        except Exception as e:
-            logger.error(f"[ChatStream] Error during streaming: {e}", exc_info=True)
-            from engine.streaming import format_sse_response
-            yield format_sse_response("error", {"message": str(e), "status": "error"})
+                logger.info(f"[ChatStream] Conversation metadata saved (session_id={session_id})")
 
     return StreamingResponse(
         event_generator(),
@@ -760,19 +825,23 @@ async def chat_with_files_stream(
         try:
             async for event_data in stream_orchestrator_graph(graph, initial_state, config):
                 yield event_data
-            
+        except Exception as e:
+            logger.error(f"[ChatWithFilesStream] Error: {e}", exc_info=True)
+            from engine.streaming import format_sse_response
+            yield format_sse_response("error", {"message": str(e), "status": "error"})
+        finally:
+            # 无论是正常完成还是异常中断，都要保存对话元数据
+            # （实际的回答内容由前端通过 /save-partial-reply 端点保存）
             if _STORE:
                 title = query[:40] if len(query) > 40 else query
                 asyncio.create_task(_STORE.upsert_conversation(
                     session_id=sid,
                     title=title,
                     role=role or "default",
-                    message_count=1
+                    message_count=1,
+                    last_reply=""  # 由前端负责更新
                 ))
-        except Exception as e:
-            logger.error(f"[ChatWithFilesStream] Error: {e}", exc_info=True)
-            from engine.streaming import format_sse_response
-            yield format_sse_response("error", {"message": str(e), "status": "error"})
+                logger.info(f"[ChatWithFilesStream] Conversation metadata saved (session_id={sid})")
 
     return StreamingResponse(
         event_generator(),

@@ -14,6 +14,7 @@ from typing import Dict, Any
 
 from orchestrator.state import OrchestratorState
 from engine.logging_config import get_logger
+from engine.streaming import emit_stream_progress
 
 logger = get_logger(__name__)
 
@@ -178,6 +179,14 @@ async def dispatcher_node(state: OrchestratorState) -> dict:
     # 顺序执行任务，累积结构化输出以支持依赖
     results = current_results.copy()           # 初始化为上一次的累积文本结果
     agent_outputs = current_structured.copy()  # 初始化为上一次的累积输出
+    await emit_stream_progress(
+        "dispatcher_progress",
+        {
+            "status": "started",
+            "tasks_count": len(tasks),
+        },
+    )
+
     for task in tasks:
         target = task.get("target", "")
         instruction = task.get("instruction", "")
@@ -185,7 +194,27 @@ async def dispatcher_node(state: OrchestratorState) -> dict:
 
         if agent_info is None:
             logger.warning(f"[Dispatcher] Unknown target '{target}', skipping")
+            await emit_stream_progress(
+                "agent_progress",
+                {
+                    "agent_id": target,
+                    "agent_name": target,
+                    "status": "skipped",
+                    "message": "Planner 生成了未知 Agent，已跳过",
+                },
+            )
             continue
+
+        agent_name = agent_info.get("name", target)
+        await emit_stream_progress(
+            "agent_progress",
+            {
+                "agent_id": target,
+                "agent_name": agent_name,
+                "status": "started",
+                "instruction": instruction,
+            },
+        )
 
         # 传递当前累积的 agent_outputs 作为 prior_structured
         result = await _a2a_send_message(
@@ -202,9 +231,27 @@ async def dispatcher_node(state: OrchestratorState) -> dict:
         if structured:
             agent_outputs[target_name] = structured
 
+        await emit_stream_progress(
+            "agent_progress",
+            {
+                "agent_id": target_name,
+                "agent_name": agent_by_id.get(target_name, {}).get("name", target_name),
+                "status": "completed",
+                "result_preview": result_text[:200] if isinstance(result_text, str) else str(result_text)[:200],
+            },
+        )
+
     logger.info(
         f"[Dispatcher] 任务执行完毕。结果 keys: {list(results.keys())} | "
         f"结构化 keys: {list(agent_outputs.keys())}"
+    )
+
+    await emit_stream_progress(
+        "dispatcher_progress",
+        {
+            "status": "completed",
+            "agents_count": len([k for k in results.keys() if not k.startswith("_")]),
+        },
     )
 
     return {"results": results, "_agent_outputs": agent_outputs}

@@ -37,6 +37,7 @@ class ConversationStore:
                         session_id   TEXT PRIMARY KEY,
                         title        TEXT NOT NULL,
                         role         TEXT DEFAULT '',
+                        last_reply   TEXT DEFAULT '',
                         created_at   TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                         updated_at   TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                         message_count INTEGER DEFAULT 0
@@ -44,6 +45,12 @@ class ConversationStore:
                 """)
                 # 确保索引存在
                 await cur.execute("CREATE INDEX IF NOT EXISTS idx_cm_updated_at ON conversation_metadata (updated_at DESC);")
+                
+                # 迁移：为现有表添加 last_reply 列（如果不存在）
+                await cur.execute("""
+                    ALTER TABLE conversation_metadata
+                    ADD COLUMN IF NOT EXISTS last_reply TEXT DEFAULT '';
+                """)
                 
                 # 创建暂停会话上下文表
                 await cur.execute("""
@@ -62,19 +69,20 @@ class ConversationStore:
                 await conn.commit()
         logger.info("Database conversation_metadata and paused_context tables initialized.")
 
-    async def upsert_conversation(self, session_id: str, title: str, role: str, message_count: int):
+    async def upsert_conversation(self, session_id: str, title: str, role: str, message_count: int, last_reply: str = ""):
         """新建或更新会话元数据。"""
         async with self.pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute("""
-                    INSERT INTO conversation_metadata (session_id, title, role, message_count, updated_at)
-                    VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    INSERT INTO conversation_metadata (session_id, title, role, message_count, last_reply, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                     ON CONFLICT (session_id) DO UPDATE SET
                         title = EXCLUDED.title,
                         role = EXCLUDED.role,
                         message_count = EXCLUDED.message_count,
+                        last_reply = EXCLUDED.last_reply,
                         updated_at = CURRENT_TIMESTAMP;
-                """, (session_id, title, role, message_count))
+                """, (session_id, title, role, message_count, last_reply))
                 await conn.commit()
 
     async def list_conversations(self) -> List[Dict[str, Any]]:
@@ -82,7 +90,7 @@ class ConversationStore:
         async with self.pool.connection() as conn:
             async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
                 await cur.execute("""
-                    SELECT session_id, title, role, created_at, updated_at, message_count
+                    SELECT session_id, title, role, created_at, updated_at, message_count, last_reply
                     FROM conversation_metadata
                     ORDER BY updated_at DESC;
                 """)
