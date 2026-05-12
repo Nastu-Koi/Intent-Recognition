@@ -4,7 +4,7 @@
 metadata:
   agent_id: general_chat
   name: 通用对话助手
-  description: "通用智能对话助手，支持日常聊天、问答。内置图像识别（OCR/场景分析/发票识别）和文档总结工具，可自动处理用户上传的图片和文档。"
+  description: "通用对话助手，支持日常闲聊和问答。内置图像识别工具，可对用户上传的图片执行 OCR 文字提取、场景内容描述、发票/票据信息识别。内置文档总结工具，可对报告、合同等文档进行要点提炼和摘要生成。"
   version: "1.0.0"
   category: "general"
   author: "System"
@@ -12,56 +12,22 @@ metadata:
 capabilities:
   skills:
     - general_conversation
-    - question_answering
     - image_recognition
     - ocr
     - invoice_recognition
-    - scene_analysis
-    - image_description
-    - text_extraction
     - document_summary
-    - text_summarization
-    - report_analysis
-    - key_points_extraction
   keywords:
-    - 聊天
     - 对话
-    - 问答
-    - 帮助
-    - 你好
-    - 图片
-    - 图像
-    - 识别
-    - 看图
+    - 图片识别
     - OCR
-    - 文字识别
     - 发票识别
-    - 票据
-    - 截图
-    - 照片
-    - 扫描
-    - 拍照
-    - 总结
-    - 摘要
-    - 归纳
-    - 提炼
-    - 核心要点
-    - 文档分析
-    - 报告总结
-    - 内容概括
+    - 文档总结
   intent_patterns:
     - general_chat
-    - 日常对话
-    - 通用问答
-    - image_recognition
     - 识别图片
-    - 看这张图
-    - 图片内容是什么
-    - 帮我识别
-    - summarize_document
+    - OCR
+    - 发票识别
     - 总结文档
-    - 提炼要点
-    - 文档摘要
   confidence_threshold: 0.5
   priority: 50
 
