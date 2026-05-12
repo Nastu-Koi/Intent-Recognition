@@ -44,8 +44,23 @@ class ConversationStore:
                 """)
                 # 确保索引存在
                 await cur.execute("CREATE INDEX IF NOT EXISTS idx_cm_updated_at ON conversation_metadata (updated_at DESC);")
+                
+                # 创建暂停会话上下文表
+                await cur.execute("""
+                    CREATE TABLE IF NOT EXISTS paused_context (
+                        id              SERIAL PRIMARY KEY,
+                        session_id      TEXT NOT NULL,
+                        paused_state    JSONB NOT NULL,
+                        created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                        archived_at     TIMESTAMP WITH TIME ZONE,
+                        new_session_id  TEXT
+                    );
+                """)
+                await cur.execute("CREATE INDEX IF NOT EXISTS idx_pc_session_id ON paused_context (session_id);")
+                await cur.execute("CREATE INDEX IF NOT EXISTS idx_pc_created_at ON paused_context (created_at DESC);")
+                
                 await conn.commit()
-        logger.info("Database conversation_metadata table initialized.")
+        logger.info("Database conversation_metadata and paused_context tables initialized.")
 
     async def upsert_conversation(self, session_id: str, title: str, role: str, message_count: int):
         """新建或更新会话元数据。"""
@@ -87,4 +102,62 @@ class ConversationStore:
                 await cur.execute("DELETE FROM conversation_metadata WHERE session_id = %s;", (session_id,))
                 await conn.commit()
         logger.info(f"Conversation metadata {session_id} deleted.")
+
+    # ─── 暂停上下文管理 ───
+    async def save_paused_context(self, session_id: str, paused_state: Dict[str, Any]) -> int:
+        """
+        保存暂停的会话上下文。
+        
+        Args:
+            session_id: 原会话ID
+            paused_state: 暂停时的状态 (包含思维链、当前答案等)
+            
+        Returns:
+            保存的记录ID
+        """
+        async with self.pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("""
+                    INSERT INTO paused_context (session_id, paused_state)
+                    VALUES (%s, %s)
+                    RETURNING id;
+                """, (session_id, json.dumps(paused_state)))
+                result = await cur.fetchone()
+                await conn.commit()
+                context_id = result[0] if result else None
+        logger.info(f"Paused context saved: session={session_id}, id={context_id}")
+        return context_id
+
+    async def get_paused_context(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """获取最新的暂停会话上下文（未被归档的）。"""
+        async with self.pool.connection() as conn:
+            async with conn.cursor(row_factory=psycopg.rows.dict_row) as cur:
+                await cur.execute("""
+                    SELECT paused_state FROM paused_context
+                    WHERE session_id = %s AND archived_at IS NULL
+                    ORDER BY created_at DESC
+                    LIMIT 1;
+                """, (session_id,))
+                result = await cur.fetchone()
+                if result:
+                    return json.loads(result["paused_state"])
+        return None
+
+    async def archive_paused_context(self, session_id: str, new_session_id: Optional[str] = None):
+        """
+        归档所有暂停上下文（标记为已使用）。
+        
+        Args:
+            session_id: 原会话ID
+            new_session_id: 新会话ID（如果开启了新会话）
+        """
+        async with self.pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("""
+                    UPDATE paused_context
+                    SET archived_at = CURRENT_TIMESTAMP, new_session_id = %s
+                    WHERE session_id = %s AND archived_at IS NULL;
+                """, (new_session_id, session_id))
+                await conn.commit()
+        logger.info(f"Paused context archived: session={session_id}, new_session={new_session_id}")
 

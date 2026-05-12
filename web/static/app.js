@@ -5,6 +5,8 @@
 const API_BASE = '';
 let sessionId = null;
 let pendingFiles = [];
+let currentStreamingController = null; // For stopping stream generation
+let isGenerating = false; // Track generation state
 
 // ─── DOM Elements ───
 const chatArea = document.getElementById('chat-area');
@@ -27,6 +29,9 @@ document.addEventListener('DOMContentLoaded', () => {
     loadRoles();
     loadConversations();
     chatInput.focus();
+
+    // Initialize send button state
+    updateSendButtonState();
 
     // Sidebar
     if (toggleSidebarBtn) toggleSidebarBtn.onclick = () => sidebar.classList.toggle('hidden');
@@ -63,6 +68,7 @@ async function loadRoles() {
 // ─── Send Message ───
 async function sendMessage() {
     const query = chatInput.value.trim();
+    
     if (!query && pendingFiles.length === 0) return;
 
     const text = query || '请分析上传的文件';
@@ -76,6 +82,7 @@ async function sendMessage() {
     appendMessage('user', text);
     chatInput.value = '';
     chatInput.style.height = 'auto';
+    chatInput.placeholder = '输入问题或拖入文件...'; // Reset placeholder
 
     // Show file names if any
     if (pendingFiles.length > 0) {
@@ -87,8 +94,14 @@ async function sendMessage() {
     const messageEl = createStreamingMessageElement();
     const thinkingChain = [];
 
-    // Disable input
-    sendBtn.disabled = true;
+    // Create AbortController for this stream
+    currentStreamingController = new AbortController();
+    isGenerating = true;
+    updateSendButtonState();
+
+    // Disable input & file upload
+    chatInput.disabled = true;
+    uploadBtn.disabled = true;
 
     try {
         if (pendingFiles.length > 0) {
@@ -106,17 +119,50 @@ async function sendMessage() {
         }
 
     } catch (e) {
-        appendMessage('agent', `❌ 网络错误: ${e.message}`);
+        if (e.name !== 'AbortError') {
+            appendMessage('agent', `❌ 网络错误: ${e.message}`);
+        }
     }
 
     // Clear files
     pendingFiles = [];
     filePreview.innerHTML = '';
 
-    // Re-enable
-    sendBtn.disabled = false;
+    // Reset generation state
+    isGenerating = false;
+    currentStreamingController = null;
+    updateSendButtonState();
+
+    // Re-enable input
+    chatInput.disabled = false;
+    uploadBtn.disabled = false;
+    chatInput.placeholder = '输入问题或拖入文件...'; // Ensure placeholder is reset
     chatInput.focus();
 }
+
+// ─── Stop Generation ───
+function stopGeneration() {
+    if (currentStreamingController) {
+        currentStreamingController.abort();
+        isGenerating = false;
+        updateSendButtonState();
+    }
+}
+
+function updateSendButtonState() {
+    if (isGenerating) {
+        sendBtn.innerHTML = '■'; 
+        sendBtn.title = '停止生成';
+        sendBtn.classList.add('generating');
+        sendBtn.onclick = stopGeneration;
+    } else {
+        sendBtn.innerHTML = '➤'; // Send arrow icon
+        sendBtn.title = '发送';
+        sendBtn.classList.remove('generating');
+        sendBtn.onclick = sendMessage;
+    }
+}
+
 
 function createStreamingMessageElement() {
     const msg = document.createElement('div');
@@ -153,6 +199,7 @@ async function sendTextStream(query) {
             role,
             session_id: sessionId,
         }),
+        signal: currentStreamingController.signal,
     });
 
     return processStreamResponse(response, arguments[1], arguments[2]);
@@ -169,10 +216,12 @@ async function sendWithFilesStream(query) {
     const response = await fetch(`${API_BASE}/chat-with-files-stream`, {
         method: 'POST',
         body: formData,
+        signal: currentStreamingController.signal,
     });
 
     return processStreamResponse(response, arguments[1], arguments[2]);
 }
+
 
 async function processStreamResponse(response, messageEl, thinkingChain) {
     if (!response.ok) {
@@ -194,10 +243,10 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
     let evalThought = '';
     let agentResults = {};
     let totalIterations = 0;
+    let currentState = null; // For paused context
 
     const contentEl = messageEl.querySelector('.streaming-content');
     const detailsEl = messageEl.querySelector('.process-details');
-    let plannerCount = 0;
 
     try {
         while (true) {
@@ -294,6 +343,12 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                         thinkingChain[plannerCount - 1].eval_thought = evalThought;
                                     }
                                     
+                                    // Save state for potential pause
+                                    currentState = {
+                                        thinking_chain: thinkingChain,
+                                        current_answer: finalAnswer
+                                    };
+                                    
                                     break;
 
                                 case 'final_reply':
@@ -322,6 +377,43 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                     // Final message already shown
                                     break;
 
+                                case 'feedback_eval':
+                                    // 处理反馈评估结果
+                                    const isRelevant = eventData.is_relevant;
+                                    const relevanceScore = eventData.relevance_score;
+                                    const reason = eventData.reason;
+                                    const newSessionId = eventData.new_session_id;
+                                    
+                                    if (isRelevant) {
+                                        contentEl.innerHTML = `
+                                            <div class="feedback-eval">
+                                                <div class="eval-header">✅ 反馈已评估为相关内容</div>
+                                                <div class="eval-details">
+                                                    <p><strong>相关度分数:</strong> ${(relevanceScore * 100).toFixed(1)}%</p>
+                                                    <p><strong>分析:</strong> ${escapeHtml(reason)}</p>
+                                                    <p style="color: var(--text-secondary);">正在基于您的补充信息继续处理...</p>
+                                                </div>
+                                            </div>
+                                        `;
+                                    } else {
+                                        contentEl.innerHTML = `
+                                            <div class="feedback-eval">
+                                                <div class="eval-header">🔄 启动新会话</div>
+                                                <div class="eval-details">
+                                                    <p><strong>相关度分数:</strong> ${(relevanceScore * 100).toFixed(1)}%</p>
+                                                    <p><strong>分析:</strong> ${escapeHtml(reason)}</p>
+                                                    <p style="color: var(--text-secondary);">您的问题与之前的内容关联度低，正在以新会话处理您的输入...</p>
+                                                </div>
+                                            </div>
+                                        `;
+                                    }
+                                    
+                                    // 如果是新会话，更新会话ID
+                                    if (newSessionId) {
+                                        sessionId = newSessionId;
+                                    }
+                                    break;
+
                                 case 'error':
                                     contentEl.innerHTML = `<div class="error-msg">❌ 错误: ${escapeHtml(eventData.message)}</div>`;
                                     break;
@@ -335,6 +427,8 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                 }
             }
         }
+    } catch (e) {
+        throw e;
     } finally {
         reader.releaseLock();
     }
@@ -554,8 +648,6 @@ chatInput.addEventListener('input', () => {
     chatInput.style.height = 'auto';
     chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
 });
-
-sendBtn.addEventListener('click', sendMessage);
 
 // ─── Persistence Helpers ───
 
