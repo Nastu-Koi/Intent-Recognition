@@ -61,7 +61,7 @@ tools.py 内部自动完成「上传文件到 Dify 获取 file_id → 调用 Dif
 ```
 agents/<agent_id>/
 ├── agent_card.yaml     # 必需：能力声明（metadata / capabilities / execution 等）
-├── subagent.py         # 必需：业务执行器（继承 DifySubAgent，实现 execute 方法）
+├── subagent.py         # 必需：业务执行器（继承 SubAgent，实现 execute 方法）
 └── __init__.py         # 可选：包标识
 ```
 
@@ -78,52 +78,77 @@ A2A_AGENT_ID=dify_expense_assistant A2A_PORT=8102 python agent_a2a_service.py
 python main.py
 ```
 
-## 添加新 Agent
+## 添加新 Agent（3 步）
 
-系统支持两种类型的 Agent，根据需要选择：
-
-### 1. 本地 Agent（纯 Python 实现，不依赖外部服务）
-
-适合不需要 Dify 后端的场景，可以直接在 `execute()` 中编写任意业务逻辑。
-
-**创建目录与能力声明**
+### 第 1 步：创建目录与 agent_card.yaml
 
 ```bash
-mkdir -p agents/my_agent
-touch agents/my_agent/__init__.py
+mkdir -p agents/<agent_id>
+touch agents/<agent_id>/__init__.py
 ```
 
-**agent_card.yaml**
+编写 `agent_card.yaml`，遵循精简原则：
+- `description`：一两句话说清能做什么，不写空洞修饰
+- `skills` / `keywords` / `intent_patterns`：各控制在 5 个左右，只写核心能力
 
 ```yaml
 metadata:
   agent_id: my_agent
   name: 我的助手
-  description: "处理特定业务..."
+  description: "具体描述该 Agent 能做什么、面向什么场景。"
   version: "1.0.0"
   category: "general"
 
 capabilities:
   skills:
-    - my_skill
+    - skill_a
+    - skill_b
+    - skill_c
   keywords:
-    - 关键词
+    - 关键词A
+    - 关键词B
+    - 关键词C
   intent_patterns:
-    - 意图
+    - pattern_a
+    - pattern_b
+    - pattern_c
+  confidence_threshold: 0.5
   priority: 50
+
+configuration:
+  max_iterations: 5
+  timeout: 180
+  max_input_length: 50000
+  temperature: 0.7
 
 execution:
   module: "agents.my_agent.subagent"
   class_name: "MyAgent"
   mode: "sync"
+
+dependencies:
+  python_packages: []
+  external_services: []
+
+scope:
+  - 能力范围 1
+  - 能力范围 2
+
+examples:
+  - 示例提问 A
+  - 示例提问 B
 ```
 
-**subagent.py**
+### 第 2 步：实现 subagent.py
+
+两种模式可选：
+
+**A. 纯本地 Agent** — 不依赖 Dify，在 `execute()` 中编写任意业务逻辑。
 
 ```python
-from engine.dify_subagent import DifySubAgent
+from engine.subagent import SubAgent
 
-class MyAgent(DifySubAgent):
+class MyAgent(SubAgent):
     def __init__(self):
         super().__init__(agent_id="my_agent")
 
@@ -134,17 +159,13 @@ class MyAgent(DifySubAgent):
         return {"status": "success", "result": "处理结果", "agent": self.agent_id}
 ```
 
-### 2. Dify Agent（封装 Dify App）
-
-适合已有 Dify App 的场景，继承 `DifySubAgent` 并调用 `query_dify_app()` 即可。
-
-**subagent.py**
+**B. Dify Agent** — 封装已有 Dify App，通过 `query_dify_app()` 调用。
 
 ```python
-from engine.dify_subagent import DifySubAgent
+from engine.subagent import SubAgent
 from engine.dify_client import query_dify_app
 
-class MyDifyAgent(DifySubAgent):
+class MyDifyAgent(SubAgent):
     def __init__(self):
         super().__init__(agent_id="my_dify_agent")
 
@@ -159,11 +180,13 @@ class MyDifyAgent(DifySubAgent):
         return {"status": "success", "result": result, "agent": self.agent_id}
 ```
 
-### 注册到主编排服务
+**C. LLM + Tool Calling Agent** — 参考 `general_chat`，LLM 自主决定何时调用工具。适用于需要内置图像识别、文档处理等能力的场景。关键文件：
+- `subagent.py`：ReAct 循环，LLM 绑定工具后自主决策
+- `tools.py`：LangChain `@tool` 定义的工具函数
 
-**注册 A2A 发现端点**
+### 第 3 步：注册并启动
 
-编辑 `.config/a2a_agents.yaml`：
+**注册 A2A 发现端点** — 编辑 `.config/a2a_agents.yaml`：
 
 ```yaml
 agents:
@@ -171,17 +194,15 @@ agents:
     card_url: "http://127.0.0.1:8103/.well-known/agent-card.json"
 ```
 
-**配置 RBAC 权限**
+**配置 RBAC 权限** — 编辑 `.config/role_permissions.yaml`，将新 Agent 添加到对应角色的 `accessible_agents`。
 
-编辑 `.config/role_permissions.yaml`，将新 Agent 添加到对应角色的 `accessible_agents` 列表。
-
-**启动**
+**启动 Agent 服务**：
 
 ```bash
 A2A_AGENT_ID=my_agent A2A_PORT=8103 python agent_a2a_service.py
 ```
 
-重启主编排服务 `python main.py`，即可在 `/agents` 端点和 Planner 的任务规划中看到新 Agent。
+重启主编排服务 `python main.py` 即可生效。
 
 ## SubAgent 返回值规范
 

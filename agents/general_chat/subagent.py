@@ -16,7 +16,7 @@ from typing import Dict, Any, List
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 
-from engine.dify_subagent import DifySubAgent
+from engine.subagent import SubAgent
 from engine.llm_factory import get_llm_model
 from engine.logging_config import get_logger
 from agents.general_chat.tools import GENERAL_CHAT_TOOLS
@@ -40,7 +40,7 @@ def _get_chat_llm():
     return _CHAT_LLM
 
 
-class GeneralChatAgent(DifySubAgent):
+class GeneralChatAgent(SubAgent):
     """
     通用对话 Agent — 支持工具调用的 LLM SubAgent。
 
