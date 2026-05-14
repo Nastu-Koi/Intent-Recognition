@@ -4,7 +4,7 @@
 metadata:
   agent_id: dify_expense_assistant
   name: 报销助手
-  description: "财务报销政策与操作咨询 - 解决报销全流程中的政策疑问与系统操作问题"
+  description: "财务报销政策与操作咨询 - 解决报销全流程中的政策疑问与系统操作问题，提供精准、实时、合规的解答服务"
   version: "1.0.0"
   category: "finance"
   author: "Finance Team"
@@ -25,9 +25,6 @@ capabilities:
     - 预算
     - 项目编码
     - 项目code
-    - 住宿
-    - 交通
-    - 餐饮
     - 差旅费
     - 报销单
     - 费用报销
@@ -45,7 +42,6 @@ capabilities:
     - 报销文档
     - 报销系统说明
     - 报销指南
-    - 报销系统有手册吗
   
   confidence_threshold: 0.6
   priority: 70
@@ -91,7 +87,7 @@ scope:
   - 报销被拒处理
 
 examples:
-  - 差旅费怎么报销
-  - 发票抬头填错了怎么办
-  - 为什么我选不了报销项目Code
-  - 报销被拒了怎么处理
+  - 为什么我无法选择报销项目Code
+  - 为什么我的审批人和之前不一样？公司的报销政策有哪些？
+  - 系统操作手册和FAQ有哪些？
+  - 为什么餐费津贴没有和与其他费用一起发放？

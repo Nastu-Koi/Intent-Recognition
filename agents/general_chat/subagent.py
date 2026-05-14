@@ -19,6 +19,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, Tool
 from engine.subagent import SubAgent
 from engine.llm_factory import get_llm_model
 from engine.logging_config import get_logger
+from engine.streaming import emit_stream_progress
 from agents.general_chat.tools import GENERAL_CHAT_TOOLS
 
 logger = get_logger(__name__)
@@ -113,6 +114,17 @@ class GeneralChatAgent(SubAgent):
             f"files={len(file_paths)} | file_paths={file_paths}"
         )
 
+        # 发送流式事件：开始处理
+        await emit_stream_progress(
+            "agent_reasoning",
+            {
+                "agent_id": self.agent_id,
+                "agent_name": "通用对话助手",
+                "status": "started",
+                "message": "开始分析问题，判断是否需要调用工具...",
+            },
+        )
+
         # ReAct 循环: LLM 调用 → 解析 tool_calls → 执行工具 → 反馈 → 再调用
         for round_idx in range(MAX_TOOL_ROUNDS):
             response = await llm_with_tools.ainvoke(messages)
@@ -128,25 +140,79 @@ class GeneralChatAgent(SubAgent):
                     f"[GeneralChat] 直接回复 (round={round_idx + 1}), "
                     f"长度={len(final_text)}"
                 )
+
+                # 发送流式事件：生成最终回复
+                await emit_stream_progress(
+                    "agent_reasoning",
+                    {
+                        "agent_id": self.agent_id,
+                        "agent_name": "通用对话助手",
+                        "status": "completed",
+                        "message": "已生成回复",
+                        "result_preview": final_text[:300],
+                    },
+                )
+
                 return {
                     "status": "success",
                     "result": final_text,
                     "agent": self.agent_id,
                 }
 
+            # 发送流式事件：开始执行工具调用
+            await emit_stream_progress(
+                "agent_reasoning",
+                {
+                    "agent_id": self.agent_id,
+                    "agent_name": "通用对话助手",
+                    "status": "tool_calling",
+                    "message": f"需要调用 {len(tool_calls)} 个工具来完成任务",
+                    "tools": [tc["name"] for tc in tool_calls],
+                },
+            )
+
             # 执行所有工具调用
-            for tc in tool_calls:
+            for tc_idx, tc in enumerate(tool_calls, 1):
                 tool_name = tc["name"]
                 tool_args = tc["args"]
                 tool_call_id = tc["id"]
 
                 logger.info(
                     f"[GeneralChat] Tool call: {tool_name}({tool_args}) "
-                    f"[round={round_idx + 1}]"
+                    f"[round={round_idx + 1}, tool={tc_idx}/{len(tool_calls)}]"
+                )
+
+                # 发送流式事件：工具调用开始
+                await emit_stream_progress(
+                    "agent_tool_call",
+                    {
+                        "agent_id": self.agent_id,
+                        "agent_name": "通用对话助手",
+                        "tool_name": tool_name,
+                        "status": "started",
+                        "message": f"正在调用工具: {tool_name}",
+                    },
                 )
 
                 # 查找并执行对应的工具
                 tool_result = self._invoke_tool(tool_name, tool_args)
+
+                logger.info(
+                    f"[GeneralChat] Tool result: {tool_name} → {str(tool_result)[:100]}..."
+                )
+
+                # 发送流式事件：工具调用完成
+                await emit_stream_progress(
+                    "agent_tool_call",
+                    {
+                        "agent_id": self.agent_id,
+                        "agent_name": "通用对话助手",
+                        "tool_name": tool_name,
+                        "status": "completed",
+                        "message": f"工具执行完成: {tool_name}",
+                        "result_preview": str(tool_result)[:200],
+                    },
+                )
 
                 # 将工具结果作为 ToolMessage 反馈给 LLM
                 messages.append(
@@ -158,8 +224,32 @@ class GeneralChatAgent(SubAgent):
 
         # 达到最大轮次仍未完成，取最后一次 LLM 回复
         logger.warning(f"[GeneralChat] 达到最大工具调用轮次 ({MAX_TOOL_ROUNDS})")
+        
+        # 发送流式事件：达到最大轮次
+        await emit_stream_progress(
+            "agent_reasoning",
+            {
+                "agent_id": self.agent_id,
+                "agent_name": "通用对话助手",
+                "status": "max_iterations",
+                "message": f"达到最大工具调用轮次 ({MAX_TOOL_ROUNDS})，返回当前结果",
+            },
+        )
+
         last_response = await llm_with_tools.ainvoke(messages)
         final_text = last_response.content if hasattr(last_response, "content") else str(last_response)
+
+        # 发送流式事件：完成
+        await emit_stream_progress(
+            "agent_reasoning",
+            {
+                "agent_id": self.agent_id,
+                "agent_name": "通用对话助手",
+                "status": "completed",
+                "message": "任务完成",
+                "result_preview": final_text[:300],
+            },
+        )
 
         return {
             "status": "success",

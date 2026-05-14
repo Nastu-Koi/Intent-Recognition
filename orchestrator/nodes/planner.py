@@ -183,20 +183,35 @@ async def planner_node(state: OrchestratorState) -> dict:
 
             "\n### 🎯 LLM 任务分配指南（关键！）:\n"
             "**分配原理**：不要基于你的常识或通用理解来分配任务。相反，应该严格基于上面列出的 Agent 的描述（description）、技能（skills）和意图模式（intent_patterns）。\n\n"
+            "**关键词精确匹配优先规则（⭐ 最重要）**：\n"
+            "1. **逐字检查**：先从用户查询中提取关键词，然后在每个 Agent 的 keywords 和 intent_patterns 中查找精确匹配。\n"
+            "2. **部分词匹配**：如果查询包含 Agent 关键词的子串或变体（如\"报销指南在哪\"包含\"报销指南\"），视为命中。\n"
+            "3. **优先级排序**：\n"
+            "   - 🔴 **完全匹配** intent_patterns 中的词 → 极高优先级（95+）→ 立即分配\n"
+            "   - 🟡 **匹配** keywords 中的词 → 高优先级（75+）\n"
+            "   - 🟢 **部分相关**（description 提及）→ 中优先级（40-75）\n"
+            "   - ⚪ **无关** → 0 分，不考虑\n"
+            "4. **不要忽视 intent_patterns**：这是该 Agent 专门设计处理的意图，必须优先匹配。\n\n"
             "**分配步骤**：\n"
-            "1. **理解每个 Agent 的职责**：仔细阅读每个 Agent 的 description、skills 和 intent_patterns。\n"
-            "2. **分析用户查询**：识别查询中的关键需求。\n"
-            "3. **评分相关性**：对于每个查询需求，计算每个 Agent 的相关性分数：\n"
-            "   - 如果 Agent 的 intent_patterns 包含相关关键词 → 高分（80-100）\n"
-            "   - 如果 Agent 的 skills 或 keywords 相关 → 中分（50-80）\n"
-            "   - 如果 Agent 的 description 提及了这个领域 → 低分（20-50）\n"
-            "   - 否则 → 无关（0）\n"
-            "4. **选择最高分 Agent**：为每个需求分配最相关的 Agent（分数最高的）。\n"
+            "1. **理解每个 Agent 的职责**：仔细阅读每个 Agent 的 description、skills、keywords 和 intent_patterns。\n"
+            "2. **分析用户查询**：识别查询中的关键词和核心需求。\n"
+            "3. **关键词匹配**：对每个关键词，检查是否在某个 Agent 的 keywords/intent_patterns 中出现。\n"
+            "4. **选择最高分 Agent**：为每个需求分配匹配分数最高的 Agent。如果多个 Agent 分数相同，选择优先级较高的。\n"
             "5. **拆分多需求**：如果用户有多个不同领域的需求，必须拆分为多个任务。\n\n"
-            "**示例**：\n"
-            "- 用户说\"办理门卡\" → 查找 intent_patterns 包含\"门卡\"或\"card\"的 Agent → 分配给该 Agent\n"
-            "- 用户说\"购买礼品\" → 查找 intent_patterns 包含\"礼品\"或\"采购\"的 Agent → 分配给该 Agent\n"
-            "- 用户既说\"办理门卡\"又说\"购买礼品\" → 两个不同的 Agent 各处理一个任务\n\n"
+            "**关键词匹配示例**：\n"
+            "- 用户说\"报销指南在哪\" → 查询包含\"报销指南\" → Agent.intent_patterns 包含\"报销指南\" → 分配给对应 Agent\n"
+            "- 用户说\"报销系统怎么用\" → 查询包含\"报销\"和\"系统\" → Agent.keywords 包含\"报销系统\" → 分配给对应 Agent\n"
+            "- 用户说\"用户手册\" → 查询包含\"用户手册\" → Agent.intent_patterns 包含\"用户手册\" → 分配给对应 Agent\n"
+            "- 用户说\"你好\" → 不匹配任何专有 Agent → 分配给 general_chat 或不分配\n\n"
+            
+            "### 📋 Instruction 生成指南\n"
+            "当生成 instruction 时，**必须清晰表达用户的真实意图和背景**：\n"
+            "- ❌ 错误示例：\"用户问报销指南\"\n"
+            "- ✅ 正确示例：\"用户想了解报销系统的用户手册/操作指南，具体想查看报销流程、发票要求和项目编码选择方法\"\n"
+            "- 指令应该足够具体，让 Agent 知道用户最终想要什么信息\n"
+            "- 如果用户的表述不清楚，instruction 中应该做「语义转译」，明确转译为标准业务术语\n"
+            "  - \"报销指南在哪\" → \"用户想查询报销系统的用户手册和操作流程说明\"\n"
+            "  - \"怎么填报销\" → \"用户需要了解报销单的填报步骤和注意事项\"\n\n"
 
             "### 输出格式:\n"
             "你必须输出 JSON，包含 rationale (规划思路) 和 tasks (任务列表)。\n"
@@ -283,6 +298,23 @@ async def planner_node(state: OrchestratorState) -> dict:
                 valid_tasks.append(task)
             else:
                 logger.warning(f"[Planner] Skipped invalid target: {target}")
+        
+        # 第 3 步：自动降级到 general_chat
+        # 如果没有任何专有 agent 被分配，自动调用 general_chat 进行通用问答
+        if not valid_tasks and "general_chat" in valid_agent_ids:
+            fallback_instruction = state.get("query", "")
+            if not fallback_instruction:
+                fallback_instruction = "用户提出了一个问题，请进行通用问答。"
+            
+            valid_tasks.append({
+                "target": "general_chat",
+                "instruction": fallback_instruction,
+            })
+            
+            logger.info(
+                f"[Planner] 无法找到专有 agent 处理，自动降级到 general_chat | "
+                f"query={fallback_instruction[:100]}"
+            )
         
         plan_data["tasks"] = valid_tasks
 
