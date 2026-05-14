@@ -11,6 +11,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from orchestrator.state import OrchestratorState
 from engine.llm_factory import get_llm_model
 from engine.logging_config import get_logger
+from engine.streaming import emit_stream_progress
 
 logger = get_logger(__name__)
 
@@ -141,10 +142,15 @@ async def final_reply_node(state: OrchestratorState) -> dict:
     llm_messages = _messages_with_current_once(messages, _display_query(state))
 
     try:
-        response = await llm.ainvoke([system_msg] + llm_messages)
-        final_text = response.content if hasattr(response, "content") else str(response)
+        # ─── 流式生成：逐 token 推送 SSE 事件 ───
+        final_text = ""
+        async for chunk in llm.astream([system_msg] + llm_messages):
+            token = chunk.content if hasattr(chunk, "content") else str(chunk)
+            if token:
+                final_text += token
+                await emit_stream_progress("final_reply_token", {"token": token})
 
-        logger.info(f"[Final_Reply] Generated response of {len(final_text)} chars")
+        logger.info(f"[Final_Reply] Streamed response of {len(final_text)} chars")
 
         # 保留完整的对话历史：之前的消息 + 当前用户输入 + AI回复
         # 注意：即使 not_related，也要保留 messages 以便后续对话能够获取上文进行对比
@@ -156,10 +162,11 @@ async def final_reply_node(state: OrchestratorState) -> dict:
             f"{[(type(m).__name__, m.content[:50] if hasattr(m, 'content') else str(m)[:50]) for m in updated_messages]}"
         )
 
-        return {
+        thinking_chain = state.get("thinking_chain", [])
+        result_dict = {
             "final_text": final_text,
             "messages": updated_messages,  # 保留完整历史而不是覆盖
-            "thinking_chain": state.get("thinking_chain", []),
+            "thinking_chain": thinking_chain,
             "eval_action": state.get("eval_action", ""),
             "eval_thought": state.get("eval_thought", ""),
             "plan": state.get("plan", {}),
@@ -171,6 +178,29 @@ async def final_reply_node(state: OrchestratorState) -> dict:
             "plan_rationale": state.get("plan", {}).get("rationale", ""),
             "agent_results": state.get("results", {}),
         }
+
+        # 流式结束后，推送元信息事件（thinking_chain, iterations 等）
+        await emit_stream_progress("final_reply_done", {
+            "total_iterations": result_dict["iterations"],
+            "plan_rationale": result_dict["plan_rationale"],
+            "eval_action": result_dict["eval_action"],
+            "agent_results": {
+                k: str(v)[:200]
+                for k, v in (result_dict["agent_results"] or {}).items()
+                if not k.startswith("_")
+            },
+            "thinking_chain": [
+                {
+                    "iteration": item.get("iteration", 0),
+                    "plan_rationale": item.get("plan_rationale", ""),
+                    "eval_action": item.get("eval_action", ""),
+                    "eval_thought": item.get("eval_thought", ""),
+                }
+                for item in thinking_chain
+            ],
+        })
+
+        return result_dict
 
     except Exception as e:
         logger.error(f"[Final_Reply Error]: {e}")

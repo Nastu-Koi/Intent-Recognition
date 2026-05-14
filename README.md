@@ -136,7 +136,7 @@ createdb intent_recognition
 A2A_AGENT_ID=general_chat A2A_PORT=8101 python agent_a2a_service.py
 
 # 终端 2：报销助手（如已配置 Dify）
-A2A_AGENT_ID=dify_expense_assistant A2A_PORT=8102 python agent_a2a_service.py
+A2A_AGENT_ID=expense_assistant A2A_PORT=8102 python agent_a2a_service.py
 ```
 
 每个 Agent 启动后会自动加载对应 `agents/<agent_id>/agent_card.yaml`，并通过 HTTP 暴露 A2A Agent Card 和 JSON-RPC 端点。验证启动成功：
@@ -228,7 +228,7 @@ Intent-Recognition/
 │   │   ├── agent_card.yaml          #     能力声明：技能、关键词、意图模式
 │   │   ├── subagent.py              #     GeneralChatAgent：LLM ReAct 循环 + Tool Calling
 │   │   └── tools.py                 #     工具函数：image_recognition, document_summary
-│   ├── dify_expense_assistant/      #   报销助手（Dify Workflow 封装）
+│   ├── expense_assistant/      #   报销助手（Dify Workflow 封装）
 │   │   ├── agent_card.yaml
 │   │   └── subagent.py              #     DifyExpenseAssistantAgent
 │   └── __init__.py
@@ -407,7 +407,7 @@ LLM_MODEL=llama3
 agents:
   - id: general_chat
     card_url: "http://127.0.0.1:8101/.well-known/agent-card.json"
-  - id: dify_expense_assistant
+  - id: expense_assistant
     card_url: "http://127.0.0.1:8102/.well-known/agent-card.json"
 ```
 
@@ -430,7 +430,7 @@ roles:
     description: "高级员工，可使用知识库问答和报销助手"
     accessible_agents:
       - general_chat
-      - dify_expense_assistant
+      - expense_assistant
 
   role_admin:
     name: "管理员"
@@ -491,7 +491,7 @@ default_role: role_admin
   "eval_action": "PASS",
   "eval_thought": "累积结果已完整解答了用户问题...",
   "agent_results": {
-    "dify_expense_assistant": "差旅费报销标准为..."
+    "expense_assistant": "差旅费报销标准为..."
   },
   "thinking_chain": [
     {
@@ -507,7 +507,7 @@ default_role: role_admin
       "eval_action": "PASS",
       "eval_thought": "已完整回答...",
       "agent_results": {
-        "dify_expense_assistant": "..."
+        "expense_assistant": "..."
       }
     }
   ]
@@ -536,7 +536,7 @@ default_role: role_admin
 | Agent ID | 名称 | 类型 | 端口 | 说明 |
 |----------|------|------|------|------|
 | `general_chat` | 通用对话助手 | 本地 Agent | 8101 | 对话 + 图片识别 (OCR/发票/场景) + 文档总结 |
-| `dify_expense_assistant` | 报销助手 | Dify Agent | 8102 | 财务报销政策与流程咨询 |
+| `expense_assistant` | 报销助手 | Dify Agent | 8102 | 财务报销政策与流程咨询 |
 
 **两种 Agent 类型**：
 
@@ -839,7 +839,7 @@ A：可以。系统检测到 `DATABASE_URL` 不可用时会以降级模式运行
 
 **Q：没有 Dify 服务可以运行吗？**
 
-A：可以。`general_chat` Agent 不需要 Dify 即可进行通用对话。图片识别和文档总结功能需要配置 Dify API Key 和对应的 Dify App。`dify_expense_assistant` 则需要 Dify 后端。
+A：可以。`general_chat` Agent 不需要 Dify 即可进行通用对话。图片识别和文档总结功能需要配置 Dify API Key 和对应的 Dify App。`expense_assistant` 则需要 Dify 后端。
 
 **Q：如何调试 Agent 的调用过程？**
 

@@ -69,13 +69,20 @@ def _guess_mime(path: Path) -> str:
     return mime_map.get(ext, "application/octet-stream")
 
 
+# 统一的 Dify 用户标识 (上传与调用必须一致)
+DIFY_USER = os.getenv("DIFY_USER", "intent-recognition")
+
+
 def _upload_file_to_dify(file_path: str, api_key: str = "") -> str:
     """
     上传本地文件到 Dify，返回 file_id。
 
+    重要: api_key 必须是目标 Dify App 的 API Key，否则上传的 file_id
+    在后续调用该 App 的 chat/workflow 时会找不到文件。
+
     Args:
         file_path: 本地文件绝对路径
-        api_key: 可选的 API Key，不传则使用全局 key
+        api_key: 目标 Dify App 的 API Key (必须与后续调用 App 的 key 一致)
 
     Returns:
         Dify file_id 字符串
@@ -89,17 +96,16 @@ def _upload_file_to_dify(file_path: str, api_key: str = "") -> str:
     if not path.exists():
         raise FileNotFoundError(f"文件不存在: {file_path}")
 
-    key = api_key or _get_dify_api_key("FILE_UPLOADER")
+    key = api_key or _get_dify_api_key()
     if not key:
         raise ValueError("DIFY_API_KEY 未配置，无法上传文件。")
 
     url = f"{_get_dify_base_url()}/files/upload"
     headers = {"Authorization": f"Bearer {key}"}
-    user = os.getenv("DIFY_UPLOADER_USER", "intent-recognition-uploader")
 
     with open(path, "rb") as f:
         files = {"file": (path.name, f, _guess_mime(path))}
-        data = {"user": user}
+        data = {"user": DIFY_USER}
         resp = requests.post(url, headers=headers, files=files, data=data, timeout=120)
         resp.raise_for_status()
         result = resp.json()
@@ -152,7 +158,7 @@ def _call_dify_vision(
         payload = {
             "inputs": {"query": query},
             "response_mode": "blocking",
-            "user": "intent-recognition",
+            "user": DIFY_USER,
             "files": files_payload,
         }
         resp = requests.post(url, json=payload, headers=headers, timeout=120)
@@ -171,7 +177,7 @@ def _call_dify_vision(
             "query": query,
             "response_mode": "blocking",
             "conversation_id": "",
-            "user": "intent-recognition",
+            "user": DIFY_USER,
             "files": files_payload,
         }
         resp = requests.post(url, json=payload, headers=headers, timeout=120)
@@ -224,7 +230,7 @@ def _call_dify_doc_summary(
         payload = {
             "inputs": {"query": query},
             "response_mode": "blocking",
-            "user": "intent-recognition",
+            "user": DIFY_USER,
             "files": files_payload,
         }
         resp = requests.post(url, json=payload, headers=headers, timeout=120)
@@ -243,7 +249,7 @@ def _call_dify_doc_summary(
             "query": query,
             "response_mode": "blocking",
             "conversation_id": "",
-            "user": "intent-recognition",
+            "user": DIFY_USER,
             "files": files_payload,
         }
         resp = requests.post(url, json=payload, headers=headers, timeout=120)
@@ -256,6 +262,12 @@ def _call_dify_doc_summary(
 # LangChain Tool 定义
 # ══════════════════════════════════════════════
 
+# 支持的图片扩展名
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+# 支持的文档扩展名
+_DOCUMENT_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt", ".md", ".csv"}
+
+
 @tool
 def image_recognition(file_path: str, instruction: str = "请描述这张图片的内容") -> str:
     """识别和分析图片内容。支持 OCR 文字识别、发票识别、场景分析、图片内容描述等视觉任务。
@@ -266,9 +278,21 @@ def image_recognition(file_path: str, instruction: str = "请描述这张图片�
     """
     logger.info(f"[Tool:image_recognition] file={file_path} | instruction={instruction[:100]}")
 
+    # 文件类型校验：仅接受图片文件
+    ext = Path(file_path).suffix.lower()
+    if ext not in _IMAGE_EXTENSIONS:
+        return (
+            f"错误: 文件 {Path(file_path).name} 不是支持的图片格式 "
+            f"(支持: {', '.join(_IMAGE_EXTENSIONS)})。"
+            f"如需处理文档，请使用 document_summary 工具。"
+        )
+
     try:
-        # Step 1: 上传图片到 Dify 获取 file_id
-        file_id = _upload_file_to_dify(file_path)
+        # 获取目标 App 的 API Key（上传和调用必须使用同一个 key）
+        vision_api_key = _get_dify_api_key("VISION")
+
+        # Step 1: 使用 Vision App 的 key 上传图片到 Dify
+        file_id = _upload_file_to_dify(file_path, api_key=vision_api_key)
 
         # Step 2: 调用 Dify Vision API
         app_type = os.getenv("DIFY_VISION_APP_TYPE", "chat")
@@ -298,9 +322,21 @@ def document_summary(file_path: str, instruction: str = "请总结这份文档�
     """
     logger.info(f"[Tool:document_summary] file={file_path} | instruction={instruction[:100]}")
 
+    # 文件类型校验：仅接受文档文件
+    ext = Path(file_path).suffix.lower()
+    if ext not in _DOCUMENT_EXTENSIONS:
+        return (
+            f"错误: 文件 {Path(file_path).name} 不是支持的文档格式 "
+            f"(支持: {', '.join(_DOCUMENT_EXTENSIONS)})。"
+            f"如需处理图片，请使用 image_recognition 工具。"
+        )
+
     try:
-        # Step 1: 上传文档到 Dify 获取 file_id
-        file_id = _upload_file_to_dify(file_path)
+        # 获取目标 App 的 API Key（上传和调用必须使用同一个 key）
+        doc_summary_api_key = _get_dify_api_key("DOC_SUMMARY")
+
+        # Step 1: 使用 Doc Summary App 的 key 上传文档到 Dify
+        file_id = _upload_file_to_dify(file_path, api_key=doc_summary_api_key)
 
         # Step 2: 调用 Dify 文档总结 API
         app_type = os.getenv("DIFY_DOC_SUMMARY_APP_TYPE", "chat")

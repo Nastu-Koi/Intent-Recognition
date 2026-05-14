@@ -2,7 +2,7 @@
 # 报销客服助手 - 财务报销政策与操作
 
 metadata:
-  agent_id: dify_expense_assistant
+  agent_id: expense_assistant
   name: 报销助手
   description: "财务报销政策与操作咨询 - 解决报销全流程中的政策疑问与系统操作问题，提供精准、实时、合规的解答服务"
   version: "1.0.0"
@@ -53,7 +53,7 @@ configuration:
   temperature: 0.7
 
 execution:
-  module: "agents.dify_expense_assistant.subagent"
+  module: "agents.expense_assistant.subagent"
   class_name: "DifyExpenseAssistantAgent"
   mode: "sync"
 

@@ -3,7 +3,7 @@ Standalone A2A server for one business agent.
 
 Run one process per agent, for example:
     A2A_AGENT_ID=general_chat A2A_PORT=8101 python agent_a2a_service.py
-    A2A_AGENT_ID=dify_expense_assistant A2A_PORT=8102 python agent_a2a_service.py
+    A2A_AGENT_ID=expense_assistant A2A_PORT=8102 python agent_a2a_service.py
 """
 
 from __future__ import annotations
@@ -153,7 +153,7 @@ def agent_card() -> dict[str, Any]:
 
 
 @app.post("/a2a/{agent_id}")
-def a2a_endpoint(agent_id: str, request: JSONRPCRequest) -> dict[str, Any]:
+async def a2a_endpoint(agent_id: str, request: JSONRPCRequest) -> dict[str, Any]:
     if agent_id != AGENT_ID:
         return _jsonrpc_error(request.id, -32602, f"agent_id mismatch: {agent_id}")
 
@@ -226,7 +226,8 @@ def a2a_endpoint(agent_id: str, request: JSONRPCRequest) -> dict[str, Any]:
         if all_uploaded_files:
             context["uploaded_files"] = all_uploaded_files
 
-    output = SUBAGENT(
+    # 使用 async 调用路径，保留 contextvar 传播 (流式进度事件)
+    output = await SUBAGENT.acall(
         {
             "query": query,
             "context": context,

@@ -4,8 +4,8 @@ Dify 报销助手 SubAgent
 调用 Dify Workflow App 提供财务报销政策咨询、流程指导等服务。
 
 配置环境变量:
-  DIFY_DIFY_EXPENSE_ASSISTANT_APP_TYPE   - workflow 或 chat (默认 workflow)
-  DIFY_DIFY_EXPENSE_ASSISTANT_API_KEY 或 DIFY_API_KEY
+  DIFY_EXPENSE_ASSISTANT_APP_TYPE   - workflow 或 chat (默认 workflow)
+  DIFY_EXPENSE_ASSISTANT_API_KEY 或 DIFY_API_KEY
   DIFY_API_BASE_URL
 """
 
@@ -18,7 +18,7 @@ from engine.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-AGENT_ID = "dify_expense_assistant"
+AGENT_ID = "expense_assistant"
 
 
 class DifyExpenseAssistantAgent(SubAgent):
@@ -35,7 +35,7 @@ class DifyExpenseAssistantAgent(SubAgent):
 
     def __init__(self):
         super().__init__(agent_id=AGENT_ID)
-        self.app_type = os.getenv("DIFY_DIFY_EXPENSE_ASSISTANT_APP_TYPE", "workflow")
+        self.app_type = os.getenv("DIFY_EXPENSE_ASSISTANT_APP_TYPE", "workflow")
 
     def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """

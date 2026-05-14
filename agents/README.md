@@ -30,7 +30,7 @@
 | Agent ID | 名称 | 类型 | 端口 | 说明 |
 |----------|------|------|------|------|
 | `general_chat` | 通用对话助手 | 本地 Agent | 8101 | 日常对话 + 图片识别 + 文档总结（内部 ReAct 循环） |
-| `dify_expense_assistant` | 报销助手 | Dify Agent | 8102 | 财务报销政策与流程咨询 |
+| `expense_assistant` | 报销助手 | Dify Agent | 8102 | 财务报销政策与流程咨询 |
 
 ### general_chat — 通用对话助手
 
@@ -52,9 +52,9 @@
 
 tools.py 内部自动完成「上传文件到 Dify 获取 file_id → 调用 Dify App」的完整流程。
 
-### dify_expense_assistant — 报销助手
+### expense_assistant — 报销助手
 
-通过 Dify API 调用 Dify Workflow App 提供报销咨询服务。支持 Chat 和 Workflow 两种模式，通过 `DIFY_DIFY_EXPENSE_ASSISTANT_APP_TYPE` 环境变量控制。
+通过 Dify API 调用 Dify Workflow App 提供报销咨询服务。支持 Chat 和 Workflow 两种模式，通过 `DIFY_EXPENSE_ASSISTANT_APP_TYPE` 环境变量控制。
 
 ## Agent 目录结构
 
@@ -72,7 +72,7 @@ agents/<agent_id>/
 A2A_AGENT_ID=general_chat A2A_PORT=8101 python agent_a2a_service.py
 
 # 启动报销助手
-A2A_AGENT_ID=dify_expense_assistant A2A_PORT=8102 python agent_a2a_service.py
+A2A_AGENT_ID=expense_assistant A2A_PORT=8102 python agent_a2a_service.py
 
 # 启动主编排服务
 python main.py

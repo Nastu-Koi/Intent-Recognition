@@ -135,6 +135,7 @@ async def _yield_graph_event(
                 "final_reply",
                 {
                     "answer": final_text,
+                    "streamed": True,  # 标记: 内容已通过 final_reply_token 逐 token 推送
                     "total_iterations": node_output.get("iterations", 0),
                     "plan_rationale": node_output.get("plan_rationale", ""),
                     "eval_action": node_output.get("eval_action", ""),

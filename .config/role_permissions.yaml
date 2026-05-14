@@ -12,7 +12,7 @@
 #
 # Current Agents:
 #   - general_chat:           通用对话助手（内置图像识别 + 文档总结工具）
-#   - dify_expense_assistant: 报销助手
+#   - expense_assistant: 报销助手
 # ============================================================
 
 roles:
@@ -29,7 +29,7 @@ roles:
     description: "高级员工，可使用知识库问答、文档总结和文件上传"
     accessible_agents:
       - general_chat
-      - dify_expense_assistant
+      - expense_assistant
 
   # Admin — full access to all agents
   role_admin:

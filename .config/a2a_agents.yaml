@@ -1,5 +1,5 @@
 agents:
   - id: general_chat
     card_url: "http://127.0.0.1:8101/.well-known/agent-card.json"
-  - id: dify_expense_assistant
+  - id: expense_assistant
     card_url: "http://127.0.0.1:8102/.well-known/agent-card.json"

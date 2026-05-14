@@ -5,4 +5,5 @@ agents 技能库 — SubAgent 集合
 
 __all__ = [
     "general_chat",
+    "expense_assistant"
 ]

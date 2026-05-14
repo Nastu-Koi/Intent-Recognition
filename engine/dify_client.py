@@ -28,13 +28,16 @@ def _load_dotenv_if_available() -> None:
 
 
 def _env_key_for_agent(agent_id: str) -> str:
-    normalized = agent_id.upper().replace("-", "_")
-    return f"{normalized}_API_KEY"
+    """Generate the env var name for a Dify agent's API key.
 
-
-def _legacy_env_key_for_agent(agent_id: str) -> str:
+    Convention: DIFY_<AGENT_ID>_API_KEY
+    Example: agent_id='VISION' -> 'DIFY_VISION_API_KEY'
+    """
     normalized = agent_id.upper().replace("-", "_")
-    return f"{normalized}_API_KEY"
+    # Avoid double prefix: if agent_id already starts with 'dify_', don't add DIFY_ again
+    if normalized.startswith("DIFY_"):
+        return f"{normalized}_API_KEY"
+    return f"DIFY_{normalized}_API_KEY"
 
 
 @dataclass
@@ -57,7 +60,6 @@ class DifyClient:
         if agent_id:
             api_key = (
                 os.getenv(_env_key_for_agent(agent_id), "")
-                or os.getenv(_legacy_env_key_for_agent(agent_id), "")
             )
         api_key = api_key or os.getenv("DIFY_API_KEY", "")
 

@@ -300,6 +300,8 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
     let totalIterations = 0;
     let currentState = null; // For paused context
     let accumulatedContent = ''; // 累积所有已显示过的内容
+    let streamingTokens = false; // 是否正在通过 token 流式输出
+    let streamedRawText = ''; // 流式期间累积的纯文本
 
     const contentEl = messageEl.querySelector('.streaming-content');
     const detailsEl = messageEl.querySelector('.process-details');
@@ -456,26 +458,62 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                     
                                     break;
 
-                                case 'final_reply':
-                                    finalAnswer = eventData.answer;
-                                    accumulatedContent = finalAnswer; // 最终回答是最重要的内容
-                                    planRationale = eventData.plan_rationale;
-                                    evalAction = eventData.eval_action;
-                                    totalIterations = eventData.total_iterations;
-                                    agentResults = eventData.agent_results;
-                                    
-                                    // 使用后端返回的完整思维链替换前端累积的数据
+                                case 'final_reply_token':
+                                    // ─── 逐 token 流式输出 ───
+                                    if (!streamingTokens) {
+                                        streamingTokens = true;
+                                        streamedRawText = '';
+                                        contentEl.innerHTML = '<span class="streaming-text"></span><span class="streaming-cursor"></span>';
+                                    }
+                                    streamedRawText += eventData.token;
+                                    {
+                                        const textSpan = contentEl.querySelector('.streaming-text');
+                                        if (textSpan) {
+                                            textSpan.textContent = streamedRawText;
+                                        }
+                                    }
+                                    scrollToBottom();
+                                    break;
+
+                                case 'final_reply_done':
+                                    // ─── 流式完成：格式化 Markdown + 构建 process-details ───
+                                    if (streamingTokens && streamedRawText) {
+                                        finalAnswer = streamedRawText;
+                                        accumulatedContent = finalAnswer;
+                                        contentEl.innerHTML = formatMarkdown(finalAnswer);
+                                    }
+                                    planRationale = eventData.plan_rationale || planRationale;
+                                    evalAction = eventData.eval_action || evalAction;
+                                    totalIterations = eventData.total_iterations || totalIterations;
+                                    agentResults = eventData.agent_results || agentResults;
                                     if (eventData.thinking_chain && eventData.thinking_chain.length > 0) {
-                                        // 清除旧数据，使用后端发送的完整thinking_chain
                                         thinkingChain = eventData.thinking_chain;
                                     }
-                                    
-                                    // Clear streaming indicator
-                                    contentEl.innerHTML = formatMarkdown(finalAnswer);
-                                    
-                                    // Build process details
                                     if (Object.keys(agentResults).length > 0 || planRationale || evalAction) {
                                         buildProcessDetails(detailsEl, thinkingChain, totalIterations);
+                                    }
+                                    streamingTokens = false;
+                                    break;
+
+                                case 'final_reply':
+                                    // ─── 图级别兜底事件 ───
+                                    finalAnswer = eventData.answer || finalAnswer;
+                                    accumulatedContent = finalAnswer;
+                                    planRationale = eventData.plan_rationale || planRationale;
+                                    evalAction = eventData.eval_action || evalAction;
+                                    totalIterations = eventData.total_iterations || totalIterations;
+                                    agentResults = eventData.agent_results || agentResults;
+
+                                    if (eventData.thinking_chain && eventData.thinking_chain.length > 0) {
+                                        thinkingChain = eventData.thinking_chain;
+                                    }
+
+                                    // 如果内容已通过 token 流式推送，不重复覆盖 DOM
+                                    if (!eventData.streamed) {
+                                        contentEl.innerHTML = formatMarkdown(finalAnswer);
+                                        if (Object.keys(agentResults).length > 0 || planRationale || evalAction) {
+                                            buildProcessDetails(detailsEl, thinkingChain, totalIterations);
+                                        }
                                     }
                                     break;
 

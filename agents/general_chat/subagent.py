@@ -58,35 +58,21 @@ class GeneralChatAgent(SubAgent):
 
     def execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        执行通用对话（同步入口，内部运行异步逻辑）。
-
-        input_data 格式:
-          {
-            "query": "用户的问题或指令",
-            "context": {
-              "file_paths": ["..."],     # 可用的本地文件路径列表
-              "metadata": {...},         # A2A 上下文
-              "prior_results": {...},    # 上游 Agent 结果
-            }
-          }
+        同步执行入口 (仅用于非 async 上下文的兜底)。
+        
+        正常 A2A 调用路径使用 aexecute → _execute_async，保留 contextvars。
         """
         import asyncio
+        return asyncio.run(self._execute_async(input_data))
 
-        try:
-            # 尝试获取当前事件循环
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # 已有运行中的循环（FastAPI/uvicorn 环境）
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as pool:
-                    result = pool.submit(
-                        asyncio.run, self._execute_async(input_data)
-                    ).result()
-                return result
-            else:
-                return loop.run_until_complete(self._execute_async(input_data))
-        except RuntimeError:
-            return asyncio.run(self._execute_async(input_data))
+    async def aexecute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        原生异步执行 — 直接调用 _execute_async，保留 contextvar 传播。
+        
+        这样 emit_stream_progress 的 _progress_queue contextvar 能正确传播，
+        前端可以实时看到 agent_reasoning / agent_tool_call 等流式事件。
+        """
+        return await self._execute_async(input_data)
 
     async def _execute_async(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """异步执行通用对话与工具调用。"""
