@@ -36,21 +36,81 @@ def _message_text(msg: Any) -> str:
     return f"{role}: {content}"
 
 
+def _is_internal_router_message(msg: Any) -> bool:
+    content = msg.content if hasattr(msg, "content") else str(msg)
+    return isinstance(msg, HumanMessage) and "【Conversation Router】" in str(content)
+
+
 def _previous_dialogue(messages: list[Any], current_query: str) -> str:
     """提取当前输入之前的对话摘要文本。"""
     if not messages:
+        logger.debug("[_previous_dialogue] messages list is empty")
         return ""
 
-    previous = list(messages)
+    logger.debug(f"[_previous_dialogue] input messages count: {len(messages)}")
+    previous = [msg for msg in messages if not _is_internal_router_message(msg)]
+    
     if previous and isinstance(previous[-1], HumanMessage):
         last_content = previous[-1].content if hasattr(previous[-1], "content") else str(previous[-1])
         if str(last_content).strip() == current_query.strip():
+            logger.debug(f"[_previous_dialogue] filtering out current query from messages")
             previous = previous[:-1]
 
+    logger.debug(f"[_previous_dialogue] after filtering: {len(previous)} messages remain")
     if not previous:
+        logger.debug("[_previous_dialogue] no messages remain after filtering -> empty string")
         return ""
 
-    return "\n".join(_message_text(msg) for msg in previous[-8:])
+    result = "\n".join(_message_text(msg) for msg in previous[-8:])
+    logger.debug(f"[_previous_dialogue] returning {len(previous[-8:])} messages")
+    return result
+
+
+def _previous_execution_context(state: OrchestratorState) -> str:
+    """提取上一轮规划与 Agent 执行摘要，补足 messages 中缺失的路由信号。"""
+    parts: list[str] = []
+
+    plan = state.get("plan") or {}
+    tasks = plan.get("tasks") or []
+    if tasks:
+        task_lines = []
+        for task in tasks[-5:]:
+            if hasattr(task, "model_dump"):
+                task = task.model_dump()
+            if not isinstance(task, dict):
+                continue
+            target = task.get("target", "")
+            instruction = str(task.get("instruction", "")).replace("\n", " ")
+            task_lines.append(f"- target={target}, instruction={instruction[:300]}")
+        if task_lines:
+            parts.append("上一轮 Planner 任务:\n" + "\n".join(task_lines))
+
+    results = state.get("results") or {}
+    if results:
+        result_lines = []
+        for agent_id, content in list(results.items())[-5:]:
+            if str(agent_id).startswith("_"):
+                continue
+            preview = str(content).replace("\n", " ")[:500]
+            result_lines.append(f"- agent={agent_id}, result={preview}")
+        if result_lines:
+            parts.append("上一轮 Agent 执行结果:\n" + "\n".join(result_lines))
+
+    thinking_chain = state.get("thinking_chain") or []
+    if thinking_chain:
+        last = thinking_chain[-1] or {}
+        if isinstance(last, dict):
+            agent_results = last.get("agent_results") or {}
+            if agent_results:
+                agents = [
+                    str(agent_id)
+                    for agent_id in agent_results.keys()
+                    if not str(agent_id).startswith("_")
+                ]
+                if agents:
+                    parts.append("上一轮已调用 Agent: " + ", ".join(agents))
+
+    return "\n\n".join(parts)
 
 
 def _parse_router_json(text: str, current_query: str) -> ConversationRouteResult:
@@ -92,9 +152,31 @@ async def conversation_router_node(state: OrchestratorState) -> dict:
     """
     query = state.get("query", "")
     messages = state.get("messages", [])
+    
+    logger.info(f"[ConversationRouter] START: query={query[:80]} | total_messages={len(messages)}")
+    for i, msg in enumerate(messages):
+        msg_type = type(msg).__name__
+        msg_content = msg.content if hasattr(msg, "content") else str(msg)
+        logger.info(f"  messages[{i}] {msg_type}: {msg_content[:100]}")
+    
     previous_dialogue = _previous_dialogue(messages, query)
+    execution_context = _previous_execution_context(state)
+    previous_context = "\n\n".join(
+        part for part in [previous_dialogue, execution_context] if part
+    )
+    logger.info(
+        "[ConversationRouter] previous_dialogue length=%s execution_context length=%s total_context_length=%s",
+        len(previous_dialogue),
+        len(execution_context),
+        len(previous_context),
+    )
+    if previous_dialogue:
+        logger.info(f"[ConversationRouter] previous_dialogue:\n{previous_dialogue[:200]}")
+    if execution_context:
+        logger.info(f"[ConversationRouter] execution_context:\n{execution_context[:200]}")
 
-    if not previous_dialogue:
+    if not previous_context:
+        logger.warning("[ConversationRouter] No previous context! Treating as not_related (新对话)")
         route = {
             "relation": "not_related",
             "related_type": "none",
@@ -102,10 +184,10 @@ async def conversation_router_node(state: OrchestratorState) -> dict:
             "rationale": "当前会话没有可参考的上一轮上下文，按新对话处理。",
             "context_note": "这是新对话，不依赖历史上下文。",
             "effective_query": query,
+            "original_query": query,
             "standalone_query": query,
             "clarification_question": "",
         }
-        logger.info("[ConversationRouter] no previous dialogue; route=not_related")
         return {"conversation_route": route, "query": query}
 
     llm = _get_router_llm()
@@ -119,22 +201,30 @@ async def conversation_router_node(state: OrchestratorState) -> dict:
             "你是 Conversation Router，负责判断用户新输入和上一轮会话的关系。\n\n"
             "你只能输出以下三类 relation：\n"
             "1. related: 新输入是在延续上一轮对话。\n"
-            "   - supplement: 补充新条件、细节、约束或背景。\n"
-            "   - correction: 修正上一轮中的事实、参数、对象或表达。\n"
-            "   - overturn: 推翻上一轮目标或关键前提，需要按新意图重做。\n"
+            "   - supplement: 补充新条件、细节、约束或背景。例如：还要加上发票、项目编码是XXX\n"
+            "   - correction: 修正、纠正、调整前一轮的执行方式、工具选择、目标或参数。\n"
+            "     例如：别用那个工具、用这个、改成调用XXX助手、不要这样做、应该、我改主意了\n"
+            "   - overturn: 推翻上一轮的核心目标或关键前提，需要按新意图重新开始。\n"
+            "     例如：算了、我不问这个了、我想问、刚才那个不重要、关键是\n"
             "2. not_related: 新输入开启新话题，应作为新对话处理，不要继承上一轮任务上下文。\n"
             "3. ambiguous: 无法可靠判断用户含义，或缺少必要指代对象，应请求更多信息。\n\n"
-            "判断规则：\n"
-            "- 代词/省略表达（例如“这个”“刚才那个”“换成”“再加上”“不是...而是...”）通常是 related。\n"
-            "- 明确的新业务、新对象、新问题，且无需上一轮才能理解，通常是 not_related。\n"
-            "- 如果既可能相关也可能无关，或者用户输入太短无法执行，标为 ambiguous。\n"
-            "- related 时必须生成 context_note，说明如何变异上一轮上下文。\n"
-            "- ambiguous 时必须生成 clarification_question，用中文向用户索取更多信息。\n"
+            "判断规则（优先级从高到低）：\n"
+            "1. 如果新输入在修正、调整、改变上一轮的执行方式/工具选择/流程 → correction（related）\n"
+            "   特别注意：如果用户说“用某某助手回答/处理”“别用某某助手/Agent”“换成/改用某某助手”，"
+            "这是在纠正上一轮 Agent 选择或执行方式，通常应判为 related + correction。\n"
+            "   此时 standalone_query 应保留用户本轮要求，并结合上一轮原始问题形成可执行问题；"
+            "context_note 应明确说明需要继承上一轮问题，只调整 Agent/执行方式。\n"
+            "2. 如果新输入包含代词或省略表达（例如 这个、刚才那个、换成、再加上、不是...而是）→ related\n"
+            "3. 如果新输入是完全新的业务、新对象、新问题，且无需上一轮才能理解 → not_related\n"
+            "4. 其他情况 → ambiguous（请求用户澄清）\n\n"
+            "输出要求：\n"
+            "- related 时必须生成 context_note，说明如何变异上一轮上下文\n"
+            "- ambiguous 时必须生成 clarification_question，用中文向用户索取更多信息\n"
         )
     )
     user_msg = HumanMessage(
         content=(
-            f"### 上一轮对话上下文\n{previous_dialogue}\n\n"
+            f"### 上一轮对话与执行上下文\n{previous_context}\n\n"
             f"### 用户新输入\n{query}\n\n"
             "请输出 JSON："
             "{\"relation\":\"related|not_related|ambiguous\","
@@ -156,14 +246,7 @@ async def conversation_router_node(state: OrchestratorState) -> dict:
             result = _parse_router_json(text, query)
     except Exception as e:
         logger.error(f"[ConversationRouter] failed: {e}", exc_info=True)
-        result = ConversationRouteResult(
-            relation="ambiguous",
-            related_type="none",
-            confidence=0.0,
-            rationale=f"Router 异常: {e}",
-            standalone_query=query,
-            clarification_question="我还不太确定你这句话要接着上一轮处理，还是开始一个新问题。可以补充说明一下吗？",
-        )
+        raise RuntimeError(f"Conversation Router LLM 调用失败: {e}") from e
 
     if result.relation != "related":
         result.related_type = "none"
@@ -180,6 +263,7 @@ async def conversation_router_node(state: OrchestratorState) -> dict:
 
     route = result.model_dump()
     route["effective_query"] = effective_query
+    route["original_query"] = query
 
     logger.info(
         "[ConversationRouter] relation=%s related_type=%s confidence=%.2f",

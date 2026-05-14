@@ -80,7 +80,10 @@ class ConversationStore:
                         title = EXCLUDED.title,
                         role = EXCLUDED.role,
                         message_count = EXCLUDED.message_count,
-                        last_reply = EXCLUDED.last_reply,
+                        last_reply = CASE
+                            WHEN EXCLUDED.last_reply <> '' THEN EXCLUDED.last_reply
+                            ELSE conversation_metadata.last_reply
+                        END,
                         updated_at = CURRENT_TIMESTAMP;
                 """, (session_id, title, role, message_count, last_reply))
                 await conn.commit()
@@ -168,4 +171,3 @@ class ConversationStore:
                 """, (new_session_id, session_id))
                 await conn.commit()
         logger.info(f"Paused context archived: session={session_id}, new_session={new_session_id}")
-

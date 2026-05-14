@@ -15,7 +15,7 @@ import uuid
 import shutil
 import asyncio
 from pathlib import Path
-from typing import Any, Optional, List
+from typing import Any, Optional, List, Dict
 
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, Request
@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage, AIMessage
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg_pool import AsyncConnectionPool
 
@@ -54,10 +55,23 @@ _CHECKPOINTER = None
 _STORE = None
 _DB_POOL = None
 
+
+def _enable_memory_checkpointer(reason: str):
+    """Use an in-process checkpointer when Postgres is unavailable."""
+    global _CHECKPOINTER, _STORE
+    _CHECKPOINTER = MemorySaver()
+    _STORE = None
+    logger.warning(
+        "%s Falling back to in-memory checkpointing. "
+        "Conversation context is kept until the service restarts.",
+        reason,
+    )
+
+
 async def _init_persistence():
     global _CHECKPOINTER, _STORE, _DB_POOL
     if not DATABASE_URL:
-        logger.warning("DATABASE_URL not set, persistence disabled.")
+        _enable_memory_checkpointer("DATABASE_URL not set.")
         return
 
     try:
@@ -88,8 +102,7 @@ async def _init_persistence():
         logger.info("Persistence layer (PostgreSQL) ready.")
     except Exception as e:
         logger.error(f"Failed to initialize persistence: {e}")
-        _CHECKPOINTER = None
-        _STORE = None
+        _enable_memory_checkpointer("PostgreSQL persistence initialization failed.")
 
 @app.on_event("startup")
 async def startup_event():
@@ -178,6 +191,80 @@ async def _get_checkpoint_file_ctx(session_id: str) -> Optional[Dict[str, Any]]:
     except Exception:
         pass
     return None
+
+
+async def _get_checkpoint_messages(session_id: str) -> List[Any]:
+    """
+    从已有 checkpoint 中加载完整的消息历史，用于多轮对话中保留上下文。
+    
+    这样可以让 Conversation Router 看到完整的对话历史，正确判断当前输入与前文的关系。
+    """
+    if not _CHECKPOINTER or not session_id:
+        return []
+    try:
+        checkpoint_tuple = await _CHECKPOINTER.aget_tuple(
+            {"configurable": {"thread_id": session_id}}
+        )
+        if checkpoint_tuple:
+            channel_values = checkpoint_tuple.checkpoint.get("channel_values", {})
+            messages = channel_values.get("messages", [])
+            logger.debug(f"[_get_checkpoint_messages] session={session_id} restored {len(messages)} messages")
+            for i, msg in enumerate(messages):
+                msg_type = type(msg).__name__
+                msg_content = msg.content if hasattr(msg, "content") else str(msg)[:100]
+                logger.debug(f"  [{i}] {msg_type}: {msg_content}")
+            return messages
+        else:
+            logger.debug(f"[_get_checkpoint_messages] session={session_id} no checkpoint found")
+    except Exception as e:
+        logger.error(f"[_get_checkpoint_messages] session={session_id} error: {e}")
+    return []
+
+
+async def _get_checkpoint_state(session_id: str) -> Dict[str, Any]:
+    """
+    从 checkpoint 中恢复完整的 orchestrator state，包括上一轮的思维链、评估结果等。
+    
+    这样下一轮 Conversation Router 和 Planner 就能看到上一轮的所有思考过程。
+    """
+    if not _CHECKPOINTER or not session_id:
+        logger.debug(f"[_get_checkpoint_state] no checkpointer or session_id for {session_id}")
+        return {}
+    
+    try:
+        checkpoint_tuple = await _CHECKPOINTER.aget_tuple(
+            {"configurable": {"thread_id": session_id}}
+        )
+        if checkpoint_tuple:
+            channel_values = checkpoint_tuple.checkpoint.get("channel_values", {})
+            restored_state = {
+                "messages": channel_values.get("messages", []),
+                "thinking_chain": channel_values.get("thinking_chain", []),
+                "eval_action": channel_values.get("eval_action", ""),
+                "eval_thought": channel_values.get("eval_thought", ""),
+                "final_text": channel_values.get("final_text", ""),
+                "plan": channel_values.get("plan", {}),
+                "results": channel_values.get("results", {}),
+                "feedback_history": channel_values.get("feedback_history", []),
+                "conversation_route": channel_values.get("conversation_route", {}),
+                "iter": channel_values.get("iter", 0),
+            }
+            logger.info(f"[_get_checkpoint_state] session={session_id} restored state:")
+            logger.info(f"  messages={len(restored_state['messages'])}, "
+                       f"thinking_chain={len(restored_state['thinking_chain'])}, "
+                       f"eval_action={bool(restored_state['eval_action'])}, "
+                       f"iter={restored_state['iter']}")
+            for i, msg in enumerate(restored_state["messages"]):
+                msg_type = type(msg).__name__
+                msg_content = msg.content if hasattr(msg, "content") else str(msg)[:100]
+                logger.info(f"  restored_msg[{i}] {msg_type}: {msg_content}")
+            return restored_state
+        else:
+            logger.info(f"[_get_checkpoint_state] session={session_id} no checkpoint found")
+    except Exception as e:
+        logger.error(f"[_get_checkpoint_state] session={session_id} error: {e}")
+    
+    return {}
 
 
 # ──────────────────────────────────────────────
@@ -328,8 +415,10 @@ async def get_conversation_history(session_id: str):
     # 格式化消息历史
     formatted = []
     for msg in messages:
-        role = "user" if isinstance(msg, HumanMessage) else "agent"
         content = msg.content if hasattr(msg, "content") else str(msg)
+        if isinstance(msg, HumanMessage) and "【Conversation Router】" in str(content):
+            continue
+        role = "user" if isinstance(msg, HumanMessage) else "agent"
         formatted.append({"role": role, "content": content})
         
     return {
@@ -357,12 +446,14 @@ async def save_partial_reply(session_id: str, request: Request):
         # 直接更新 conversation_metadata 中的 last_reply
         async with _STORE.pool.connection() as conn:
             async with conn.cursor() as cur:
-                # 只更新 last_reply 和 updated_at，不修改其他字段
+                # 只更新 last_reply 和 updated_at；如果 metadata 尚未创建，则先补一行。
                 await cur.execute("""
-                    UPDATE conversation_metadata
-                    SET last_reply = %s, updated_at = CURRENT_TIMESTAMP
-                    WHERE session_id = %s;
-                """, (partial_reply[:200], session_id))  # 截取前 200 字
+                    INSERT INTO conversation_metadata (session_id, title, last_reply, updated_at)
+                    VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        last_reply = EXCLUDED.last_reply,
+                        updated_at = CURRENT_TIMESTAMP;
+                """, (session_id, partial_reply[:40] or "中断的会话", partial_reply[:200]))
                 await conn.commit()
                 
                 # 验证更新是否成功
@@ -452,24 +543,25 @@ async def chat(request: ChatRequest):
     )
 
     # ─── Step 3: 构建初始 State ───
-    # 多轮对话：从 checkpoint 恢复 file_ctx，避免文本轮次丢失文件上下文
+    # 多轮对话：从 checkpoint 恢复完整状态，包括思维链、评估结果等
     file_ctx = await _get_checkpoint_file_ctx(session_id)
-
+    checkpoint_state = await _get_checkpoint_state(session_id)
+    
     initial_state = {
         "messages": [HumanMessage(content=request.query)],
         "query": request.query,
         "file_ctx": file_ctx,
         "role": request.role or "",
         "available_agents": available_agents,
-        "plan": {},
-        "results": {},
-        "iter": 0,
-        "feedback_history": [],
-        "eval_action": "",
-        "eval_thought": "",
-        "final_text": "",
-        "thinking_chain": [],
-        "conversation_route": {},
+        "plan": checkpoint_state.get("plan", {}),
+        "results": checkpoint_state.get("results", {}),
+        "iter": checkpoint_state.get("iter", 0),
+        "feedback_history": checkpoint_state.get("feedback_history", []),
+        "eval_action": checkpoint_state.get("eval_action", ""),
+        "eval_thought": checkpoint_state.get("eval_thought", ""),
+        "final_text": checkpoint_state.get("final_text", ""),
+        "thinking_chain": checkpoint_state.get("thinking_chain", []),
+        "conversation_route": checkpoint_state.get("conversation_route", {}),
     }
 
     # ─── Step 4: 执行 LangGraph 图 ───
@@ -586,22 +678,23 @@ async def chat_with_files(
     filtered_cards = RBAC.filter_cards(all_cards, role)
     available_agents = [_card_to_prompt_dict(c) for c in filtered_cards]
 
-    # 构建初始 State
+    # 构建初始 State - 从 checkpoint 恢复完整状态
+    checkpoint_state = await _get_checkpoint_state(sid)
     initial_state = {
         "messages": [HumanMessage(content=query)],
         "query": query,
         "file_ctx": file_ctx,
         "role": role or "",
         "available_agents": available_agents,
-        "plan": {},
-        "results": {},
-        "iter": 0,
-        "feedback_history": [],
-        "eval_action": "",
-        "eval_thought": "",
-        "final_text": "",
-        "thinking_chain": [],
-        "conversation_route": {},
+        "plan": checkpoint_state.get("plan", {}),
+        "results": checkpoint_state.get("results", {}),
+        "iter": checkpoint_state.get("iter", 0),
+        "feedback_history": checkpoint_state.get("feedback_history", []),
+        "eval_action": checkpoint_state.get("eval_action", ""),
+        "eval_thought": checkpoint_state.get("eval_thought", ""),
+        "final_text": checkpoint_state.get("final_text", ""),
+        "thinking_chain": checkpoint_state.get("thinking_chain", []),
+        "conversation_route": checkpoint_state.get("conversation_route", {}),
     }
 
     # 执行 LangGraph 图
@@ -696,29 +789,31 @@ async def chat_stream(request: ChatRequest):
 
     logger.info(
         f"[ChatStream] session={session_id} | role={request.role} | "
+        f"client_session={request.session_id or '<new>'} | "
         f"agents={[a['agent_id'] for a in available_agents]} | "
         f"query={request.query[:100]}..."
     )
 
     # ─── Step 3: 构建初始 State ───
-    # 多轮对话：从 checkpoint 恢复 file_ctx，避免文本轮次丢失文件上下文
+    # 多轮对话：从 checkpoint 恢复完整状态，包括思维链、评估结果等
     file_ctx = await _get_checkpoint_file_ctx(session_id)
-
+    checkpoint_state = await _get_checkpoint_state(session_id)
+    
     initial_state = {
         "messages": [HumanMessage(content=request.query)],
         "query": request.query,
         "file_ctx": file_ctx,
         "role": request.role or "",
         "available_agents": available_agents,
-        "plan": {},
-        "results": {},
-        "iter": 0,
-        "feedback_history": [],
-        "eval_action": "",
-        "eval_thought": "",
-        "final_text": "",
-        "thinking_chain": [],
-        "conversation_route": {},
+        "plan": checkpoint_state.get("plan", {}),
+        "results": checkpoint_state.get("results", {}),
+        "iter": checkpoint_state.get("iter", 0),
+        "feedback_history": checkpoint_state.get("feedback_history", []),
+        "eval_action": checkpoint_state.get("eval_action", ""),
+        "eval_thought": checkpoint_state.get("eval_thought", ""),
+        "final_text": checkpoint_state.get("final_text", ""),
+        "thinking_chain": checkpoint_state.get("thinking_chain", []),
+        "conversation_route": checkpoint_state.get("conversation_route", {}),
     }
 
     # ─── Step 4: 使用 astream 流式执行 ───
@@ -831,25 +926,27 @@ async def chat_with_files_stream(
     available_agents = [_card_to_prompt_dict(c) for c in filtered_cards]
 
     logger.info(
-        f"[ChatWithFilesStream] session={sid} | role={role} | query={query[:100]}..."
+        f"[ChatWithFilesStream] session={sid} | role={role} | "
+        f"client_session={session_id or '<new>'} | query={query[:100]}..."
     )
 
-    # 构建初始 State
+    # 构建初始 State - 从 checkpoint 恢复完整状态
+    checkpoint_state = await _get_checkpoint_state(sid)
     initial_state = {
         "messages": [HumanMessage(content=query)],
         "query": query,
         "file_ctx": file_ctx,
         "role": role or "",
         "available_agents": available_agents,
-        "plan": {},
-        "results": {},
-        "iter": 0,
-        "feedback_history": [],
-        "eval_action": "",
-        "eval_thought": "",
-        "final_text": "",
-        "thinking_chain": [],
-        "conversation_route": {},
+        "plan": checkpoint_state.get("plan", {}),
+        "results": checkpoint_state.get("results", {}),
+        "iter": checkpoint_state.get("iter", 0),
+        "feedback_history": checkpoint_state.get("feedback_history", []),
+        "eval_action": checkpoint_state.get("eval_action", ""),
+        "eval_thought": checkpoint_state.get("eval_thought", ""),
+        "final_text": checkpoint_state.get("final_text", ""),
+        "thinking_chain": checkpoint_state.get("thinking_chain", []),
+        "conversation_route": checkpoint_state.get("conversation_route", {}),
     }
 
     # 使用 astream 流式执行

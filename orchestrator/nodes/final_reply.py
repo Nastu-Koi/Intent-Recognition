@@ -26,6 +26,41 @@ def _get_reply_llm():
     return _REPLY_LLM
 
 
+def _messages_with_current_once(messages, query: str):
+    """Return history containing the current human query at most once."""
+    updated = [
+        msg for msg in (messages or [])
+        if not (
+            isinstance(msg, HumanMessage)
+            and "【Conversation Router】" in str(msg.content)
+        )
+    ]
+    if not updated or not (
+        isinstance(updated[-1], HumanMessage)
+        and str(updated[-1].content).strip() == query.strip()
+    ):
+        updated.append(HumanMessage(content=query))
+    return updated
+
+
+def _display_query(state: OrchestratorState) -> str:
+    """Return the user-visible query, not the router-mutated effective query."""
+    route = state.get("conversation_route") or {}
+    original = route.get("original_query")
+    if original:
+        return original
+
+    for msg in reversed(state.get("messages", []) or []):
+        if isinstance(msg, HumanMessage):
+            return str(msg.content)
+    return state.get("query", "")
+
+
+def _messages_for_history(state: OrchestratorState) -> list:
+    """Persist only user-visible messages plus assistant replies."""
+    return _messages_with_current_once(state.get("messages", []), _display_query(state))
+
+
 async def final_reply_node(state: OrchestratorState) -> dict:
     """
     Final_Reply: 将 Sub Agents 结果综合成面向用户的自然语言回答。
@@ -43,9 +78,13 @@ async def final_reply_node(state: OrchestratorState) -> dict:
             or route.get("clarification_question")
             or "我还需要更多信息才能判断你想继续上一轮，还是开始一个新问题。可以再补充一点背景吗？"
         )
+        # 保留完整的对话历史：包括当前用户问题 + 澄清问题
+        updated_messages = _messages_for_history(state)
+        updated_messages.append(AIMessage(content=final_text))
+        
         return {
             "final_text": final_text,
-            "messages": [AIMessage(content=final_text)],
+            "messages": updated_messages,
             "iterations": state.get("iter", 0),
             "plan_rationale": "",
             "eval_action": "AMBIGUOUS",
@@ -99,25 +138,55 @@ async def final_reply_node(state: OrchestratorState) -> dict:
         )
     )
 
-    user_msg = HumanMessage(content=query)
+    llm_messages = _messages_with_current_once(messages, _display_query(state))
 
     try:
-        response = await llm.ainvoke([system_msg] + messages + [user_msg])
+        response = await llm.ainvoke([system_msg] + llm_messages)
         final_text = response.content if hasattr(response, "content") else str(response)
 
         logger.info(f"[Final_Reply] Generated response of {len(final_text)} chars")
 
+        # 保留完整的对话历史：之前的消息 + 当前用户输入 + AI回复
+        # 注意：即使 not_related，也要保留 messages 以便后续对话能够获取上文进行对比
+        updated_messages = _messages_for_history(state)
+        updated_messages.append(AIMessage(content=final_text))
+
+        logger.info(
+            f"[Final_Reply] Returning {len(updated_messages)} messages: "
+            f"{[(type(m).__name__, m.content[:50] if hasattr(m, 'content') else str(m)[:50]) for m in updated_messages]}"
+        )
+
         return {
             "final_text": final_text,
-            "messages": [AIMessage(content=final_text)],
-            "iterations": state.get("iter", 0),
-            "plan_rationale": state.get("plan", {}).get("rationale", ""),
+            "messages": updated_messages,  # 保留完整历史而不是覆盖
+            "thinking_chain": state.get("thinking_chain", []),
             "eval_action": state.get("eval_action", ""),
             "eval_thought": state.get("eval_thought", ""),
+            "plan": state.get("plan", {}),
+            "results": state.get("results", {}),
+            "feedback_history": state.get("feedback_history", []),
+            "conversation_route": state.get("conversation_route", {}),
+            "iter": state.get("iter", 0),
+            "iterations": state.get("iter", 0),
+            "plan_rationale": state.get("plan", {}).get("rationale", ""),
             "agent_results": state.get("results", {}),
-            "thinking_chain": state.get("thinking_chain", []),
         }
 
     except Exception as e:
         logger.error(f"[Final_Reply Error]: {e}")
-        return {"final_text": f"生成回复时发生错误: {e}"}
+        messages = _messages_for_history(state)
+        error_msg = f"生成回复时发生错误: {e}"
+        updated_messages = list(messages) if messages else []
+        updated_messages.append(AIMessage(content=error_msg))
+        return {
+            "final_text": error_msg,
+            "messages": updated_messages,
+            "thinking_chain": state.get("thinking_chain", []),
+            "eval_action": state.get("eval_action", ""),
+            "eval_thought": state.get("eval_thought", ""),
+            "plan": state.get("plan", {}),
+            "results": state.get("results", {}),
+            "feedback_history": state.get("feedback_history", []),
+            "conversation_route": state.get("conversation_route", {}),
+            "iter": state.get("iter", 0),
+        }

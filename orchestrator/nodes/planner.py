@@ -134,9 +134,20 @@ async def planner_node(state: OrchestratorState) -> dict:
         file_summary.append(f"{len(names)} 份文档 [{', '.join(names)}]")
     file_str = "; ".join(file_summary) if file_summary else "无文件"
 
+    # Conversation Router 上下文变异结果。
+    # not_related 必须作为真正的新话题处理，不能让上一轮 results/feedback/iter 污染 Planner。
+    route = state.get("conversation_route") or {}
+    relation = route.get("relation")
+    context_note = route.get("context_note") or route.get("rationale") or ""
+    effective_query = state.get("query", "")
+
     # ─── 构建反馈历史上下文 ───
-    current_iter = state.get("iter", 0)
-    feedback_history = state.get("feedback_history", [])
+    if relation == "not_related":
+        current_iter = 0
+        feedback_history = []
+    else:
+        current_iter = state.get("iter", 0)
+        feedback_history = state.get("feedback_history", [])
 
     if current_iter > 0 and feedback_history:
         feedback_block = "\n".join(
@@ -152,7 +163,7 @@ async def planner_node(state: OrchestratorState) -> dict:
         iteration_ctx = "\n### 首次规划\n这是第一轮任务分发，请全面分析用户需求。\n"
 
     # ─── 构建前一轮结果上下文 ───
-    prev_results = state.get("results", {})
+    prev_results = {} if relation == "not_related" else state.get("results", {})
     if prev_results:
         results_block = "\n".join(
             [f"  - {k}: {str(v)[:4000]}" for k, v in prev_results.items()]
@@ -173,7 +184,12 @@ async def planner_node(state: OrchestratorState) -> dict:
             "4. **文件处理**: 如果用户上传了图片或文档，直接将文件处理任务分配给具有相应工具能力的 Agent（如 `general_chat`），该 Agent 内部会自动完成文件上传和处理，无需额外的上传步骤。\n"
             "5. **直接回复 (General Chat)**: 对于通用问题、日常对话、图片识别、文档总结等任务，调度 `general_chat` Agent。对于完全不涉及任何 Agent 能力范围的极简问题，可以不调度任何 Agent，由 Final Responder 直接回答。\n"
             "6. **背景注入**: 如果指派的任务依赖之前的结果，必须在指令中包含【背景参考】。\n"
-            f"7. **合法 target**: target 字段只能使用以下 agent_id: {valid_agent_ids}\n\n"
+            f"7. **合法 target**: target 字段只能使用以下 agent_id: {valid_agent_ids}\n"
+            "8. **上下文纠正优先**: 如果 Conversation Router 标记 related_type=correction，"
+            "且用户是在纠正上一轮的 Agent/工具选择（例如“用某助手回答”“不要用某助手”），"
+            "这属于执行方式约束，优先级高于普通关键词匹配。只要被指定的 Agent 是合法 target，"
+            "就必须为该 Agent 生成任务；如果你认为该 Agent 可能不擅长，也应让该 Agent 基于其能力边界作答，"
+            "不要因为关键词不匹配而返回空 tasks。\n\n"
 
             f"【当前可用文件】: {file_str}\n"
             f"{iteration_ctx}"
@@ -220,11 +236,10 @@ async def planner_node(state: OrchestratorState) -> dict:
         )
     )
 
-    # Conversation Router 上下文变异结果
-    route = state.get("conversation_route") or {}
-    relation = route.get("relation")
-    context_note = route.get("context_note") or route.get("rationale") or ""
-    effective_query = state.get("query", "")
+    logger.info(f"[Planner] relation={relation} effective_query={effective_query[:80]}")
+    if relation == "related":
+        logger.info(f"[Planner] context_note: {context_note[:100]}")
+    
     if relation == "related":
         system_msg.content += (
             "\n\n### Conversation Router / Context Mutation Layer\n"
@@ -233,6 +248,8 @@ async def planner_node(state: OrchestratorState) -> dict:
             f"- effective_query: {effective_query}\n"
             f"- context_note: {context_note}\n"
             "请将该说明视为对上一轮上下文的补充/纠正/推翻，并据此规划当前轮任务。\n"
+            "特别是当 related_type=correction 表示用户要求改用某个可用 Agent 时，"
+            "必须继承上一轮原始问题，并为用户指定的 Agent 生成任务；instruction 中要同时包含上一轮问题和本轮改用 Agent 的要求。\n"
         )
     elif relation == "not_related":
         system_msg.content += (
@@ -247,6 +264,8 @@ async def planner_node(state: OrchestratorState) -> dict:
         messages = [HumanMessage(content=state.get("query", ""))]
     else:
         messages = all_messages
+
+    logger.debug(f"[Planner] messages_count={len(messages)} relation={relation}")
 
     try:
         if structured_llm is not None:
@@ -299,22 +318,18 @@ async def planner_node(state: OrchestratorState) -> dict:
             else:
                 logger.warning(f"[Planner] Skipped invalid target: {target}")
         
-        # 第 3 步：自动降级到 general_chat
-        # 如果没有任何专有 agent 被分配，自动调用 general_chat 进行通用问答
-        if not valid_tasks and "general_chat" in valid_agent_ids:
-            fallback_instruction = state.get("query", "")
-            if not fallback_instruction:
-                fallback_instruction = "用户提出了一个问题，请进行通用问答。"
-            
-            valid_tasks.append({
-                "target": "general_chat",
-                "instruction": fallback_instruction,
-            })
-            
-            logger.info(
-                f"[Planner] 无法找到专有 agent 处理，自动降级到 general_chat | "
-                f"query={fallback_instruction[:100]}"
-            )
+        # 第 3 步：保留空任务作为“直接回复”信号。
+        # Planner 提示词已经要求图片/文档/通用问答在需要时显式调度 general_chat。
+        # 因此这里不能再无条件补一个 general_chat，否则普通追问或路由异常会被误触发工具调用。
+        if not valid_tasks:
+            if relation == "related" and route.get("related_type") == "correction":
+                logger.warning(
+                    "[Planner] correction 轮次未生成任务，可能违反用户对 Agent/工具选择的纠正要求 | query=%s | context_note=%s",
+                    state.get("query", "")[:120],
+                    context_note[:200],
+                )
+            else:
+                logger.info("[Planner] 未生成可执行任务，保留空计划并交由 Final Reply 直接回答")
         
         plan_data["tasks"] = valid_tasks
 
@@ -323,10 +338,22 @@ async def planner_node(state: OrchestratorState) -> dict:
             f"Tasks: {[t['target'] for t in plan_data['tasks']]}"
         )
 
-        return {
+        update = {
             "plan": plan_data,
-            "iter": state.get("iter", 0) + 1
+            "iter": current_iter + 1,
         }
+        if relation == "not_related":
+            update.update(
+                {
+                    "results": {},
+                    "_agent_outputs": {},
+                    "feedback_history": [],
+                    "eval_action": "",
+                    "eval_thought": "",
+                    "thinking_chain": [],
+                }
+            )
+        return update
 
     except Exception as e:
         logger.error(f"[Planner Error]: {e}")

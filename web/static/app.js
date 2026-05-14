@@ -26,6 +26,7 @@ const sidebarNewChatBtn = document.getElementById('sidebar-new-chat-btn');
 
 // ─── Init ───
 document.addEventListener('DOMContentLoaded', () => {
+    localStorage.removeItem('intentRecognitionSessionId');
     loadRoles();
     loadConversations();
     chatInput.focus();
@@ -111,12 +112,7 @@ async function sendMessage() {
         }
 
         // Update session
-        const sessionIdHeader = messageEl.dataset.sessionId;
-        if (sessionIdHeader) {
-            const isNew = !sessionId;
-            sessionId = sessionIdHeader;
-            if (isNew) loadConversations();
-        }
+        adoptSessionId(messageEl.dataset.sessionId);
 
     } catch (e) {
         if (e.name !== 'AbortError') {
@@ -161,6 +157,14 @@ function updateSendButtonState() {
         sendBtn.classList.remove('generating');
         sendBtn.onclick = sendMessage;
     }
+}
+
+function adoptSessionId(nextSessionId) {
+    if (!nextSessionId) return;
+
+    const isNew = !sessionId || sessionId !== nextSessionId;
+    sessionId = nextSessionId;
+    if (isNew) loadConversations();
 }
 
 
@@ -282,6 +286,7 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
     const sessionIdHeader = response.headers.get('X-Session-Id');
     if (sessionIdHeader) {
         messageEl.dataset.sessionId = sessionIdHeader;
+        adoptSessionId(sessionIdHeader);
     }
 
     const reader = response.body.getReader();
@@ -579,8 +584,8 @@ function buildProcessDetails(detailsEl, thinkingChain, totalIterations) {
 
     const toggle = document.createElement('button');
     toggle.className = 'process-toggle';
-    // 计算实际有内容的迭代项数
-    const validIterations = thinkingChain.filter(item => item && (item.plan_rationale || item.eval_action)).length;
+    // 计算实际有内容的迭代项数（包括有agent_results的项）
+    const validIterations = thinkingChain.filter(item => item && (item.plan_rationale || item.agent_results || item.eval_action)).length;
     toggle.innerHTML = `<span class="arrow">▶</span> 查看完整 Agent 思考过程 (${validIterations} 轮迭代)`;
 
     const content = document.createElement('div');
@@ -593,10 +598,24 @@ function buildProcessDetails(detailsEl, thinkingChain, totalIterations) {
 
     let html = '';
     thinkingChain.forEach((item, index) => {
-        if (item && (item.plan_rationale || item.eval_action)) {
+        // 只要有任何内容就显示，不要求必须有plan_rationale或eval_action
+        const hasContent = item && (item.plan_rationale || item.agent_results || item.eval_action || item.eval_thought);
+        if (hasContent) {
+            console.log(`[BuildProcessDetails] Iteration ${index}:`, item); // 调试日志
             html += `<div class="iteration"><h4>第 ${item.iteration || index + 1} 轮迭代</h4>`;
             if (item.plan_rationale) {
                 html += `<div class="process-item"><div class="process-label">🧠 规划思路</div>${escapeHtml(item.plan_rationale)}</div>`;
+            }
+            // 添加 Agent 执行阶段的结果 (在评估决策之前)
+            if (item.agent_results && typeof item.agent_results === 'object' && Object.keys(item.agent_results).length > 0) {
+                console.log(`[BuildProcessDetails] Found agent_results for iteration ${index}:`, item.agent_results); // 调试日志
+                html += `<div class="process-item"><div class="process-label">📊 Agent 执行结果</div>`;
+                for (const [agentId, result] of Object.entries(item.agent_results)) {
+                    if (!agentId.startsWith('_')) {
+                        html += `<div><strong>${escapeHtml(agentId)}</strong>: ${escapeHtml(String(result).substring(0, 150))}</div>`;
+                    }
+                }
+                html += `</div>`;
             }
             if (item.eval_action) {
                 const emoji = { PASS: '✅', PARTIAL_ACCEPT: '⚠️', NEEDS_REVISION: '🔄' }[item.eval_action] || '❓';
@@ -852,7 +871,7 @@ function renderConversationList(conversations) {
 async function loadConversation(id) {
     if (id === sessionId) return;
     
-    sessionId = id;
+    adoptSessionId(id);
     chatArea.innerHTML = '';
     if (welcomeContainer) welcomeContainer.style.display = 'none';
     
@@ -896,6 +915,7 @@ async function deleteConversation(id) {
 
 function startNewChat() {
     sessionId = null;
+    localStorage.removeItem('intentRecognitionSessionId');
     chatArea.innerHTML = '';
     if (welcomeContainer) {
         welcomeContainer.style.display = 'flex';
@@ -919,7 +939,7 @@ function appendThinkingToBubble(bubble, thinking_chain) {
 
     const toggle = document.createElement('button');
     toggle.className = 'process-toggle';
-    const validItems = thinking_chain.filter(item => item && (item.plan_rationale || item.eval_action)).length;
+    const validItems = thinking_chain.filter(item => item && (item.plan_rationale || item.agent_results || item.eval_action)).length;
     toggle.innerHTML = `<span class="arrow">▶</span> View Thought Process (${validItems} steps)`;
     
     const content = document.createElement('div');
@@ -936,19 +956,19 @@ function appendThinkingToBubble(bubble, thinking_chain) {
         if (item.plan_rationale) {
             html += `<div class="process-item"><div class="process-label">🧠 Rationale</div>${escapeHtml(item.plan_rationale)}</div>`;
         }
-        if (item.eval_action) {
-            const emoji = { PASS: '✅', PARTIAL_ACCEPT: '⚠️', NEEDS_REVISION: '🔄' }[item.eval_action] || '❓';
-            html += `<div class="process-item"><div class="process-label">🎯 Action</div>${emoji} ${escapeHtml(item.eval_action)}</div>`;
-        }
-        if (item.eval_thought) {
-            html += `<div class="process-item"><div class="process-label">🧐 Analysis</div>${escapeHtml(item.eval_thought)}</div>`;
-        }
         if (item.agent_results && Object.keys(item.agent_results).length > 0) {
             html += `<div class="process-item"><div class="process-label">📊 Results</div>`;
             for (const [k, v] of Object.entries(item.agent_results)) {
                 html += `<div><strong>${escapeHtml(k)}</strong>: ${escapeHtml(String(v))}</div>`;
             }
             html += `</div>`;
+        }
+        if (item.eval_action) {
+            const emoji = { PASS: '✅', PARTIAL_ACCEPT: '⚠️', NEEDS_REVISION: '🔄' }[item.eval_action] || '❓';
+            html += `<div class="process-item"><div class="process-label">🎯 Action</div>${emoji} ${escapeHtml(item.eval_action)}</div>`;
+        }
+        if (item.eval_thought) {
+            html += `<div class="process-item"><div class="process-label">🧐 Analysis</div>${escapeHtml(item.eval_thought)}</div>`;
         }
         html += `</div>`;
     });
