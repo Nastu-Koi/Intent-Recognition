@@ -78,6 +78,9 @@ class GeneralChatAgent(SubAgent):
         """异步执行通用对话与工具调用。"""
         query = input_data.get("query", "")
         context = input_data.get("context", {})
+        
+        # 保存 conversation_id 供工具使用
+        self._conversation_id = context.get("conversation_id", "")
 
         # 收集可用文件路径
         file_paths = self._collect_file_paths(context)
@@ -312,7 +315,12 @@ class GeneralChatAgent(SubAgent):
             return f"未知工具: {tool_name}"
 
         try:
-            return tool_fn.invoke(tool_args)
+            # 注入 conversation_id 到工具参数中（如果工具支持）
+            enhanced_args = dict(tool_args)
+            if hasattr(self, '_conversation_id') and self._conversation_id:
+                enhanced_args['conversation_id'] = self._conversation_id
+            
+            return tool_fn.invoke(enhanced_args)
         except Exception as e:
             logger.error(f"[GeneralChat] 工具 {tool_name} 执行失败: {e}")
             return f"工具执行失败: {e}"

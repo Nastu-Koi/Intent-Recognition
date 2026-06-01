@@ -123,6 +123,7 @@ def _call_dify_vision(
     query: str,
     file_ids: List[str],
     app_type: str = "chat",
+    conversation_id: str = "",
 ) -> str:
     """
     调用 Dify Vision App（支持 chat / workflow 模式）。
@@ -131,6 +132,7 @@ def _call_dify_vision(
         query: 识别指令
         file_ids: Dify file_id 列表
         app_type: chat 或 workflow
+        conversation_id: Dify 会话 ID（用于多轮对话）
 
     Returns:
         识别结果文本
@@ -161,6 +163,8 @@ def _call_dify_vision(
             "user": DIFY_USER,
             "files": files_payload,
         }
+        if conversation_id:
+            payload["conversation_id"] = conversation_id
         resp = requests.post(url, json=payload, headers=headers, timeout=120)
         resp.raise_for_status()
         data = resp.json()
@@ -176,7 +180,7 @@ def _call_dify_vision(
             "inputs": {},
             "query": query,
             "response_mode": "blocking",
-            "conversation_id": "",
+            "conversation_id": conversation_id,
             "user": DIFY_USER,
             "files": files_payload,
         }
@@ -194,6 +198,7 @@ def _call_dify_doc_summary(
     query: str,
     file_ids: List[str],
     app_type: str = "chat",
+    conversation_id: str = "",
 ) -> str:
     """
     调用 Dify 文档总结 App。
@@ -202,6 +207,7 @@ def _call_dify_doc_summary(
         query: 总结指令
         file_ids: Dify file_id 列表
         app_type: chat 或 workflow
+        conversation_id: Dify 会话 ID（用于多轮对话）
 
     Returns:
         总结结果文本
@@ -226,19 +232,22 @@ def _call_dify_doc_summary(
     ]
 
     if app_type == "workflow":
+        input_variable = os.getenv("DIFY_DOC_SUMMARY_INPUT_VARIABLE", "query")
         url = f"{_get_dify_base_url()}/workflows/run"
         payload = {
-            "inputs": {"query": query},
+            "inputs": {input_variable: query},
             "response_mode": "blocking",
             "user": DIFY_USER,
             "files": files_payload,
         }
+        if conversation_id:
+            payload["conversation_id"] = conversation_id
         resp = requests.post(url, json=payload, headers=headers, timeout=120)
         resp.raise_for_status()
         data = resp.json()
         outputs = (data.get("data") or {}).get("outputs") or data.get("outputs") or {}
         if isinstance(outputs, dict):
-            for key in ("answer", "result", "text", "output"):
+            for key in ("answer", "result", "text", "output", "summary", "summarized"):
                 if key in outputs:
                     return str(outputs[key])
         return str(outputs or data)
@@ -248,7 +257,7 @@ def _call_dify_doc_summary(
             "inputs": {},
             "query": query,
             "response_mode": "blocking",
-            "conversation_id": "",
+            "conversation_id": conversation_id,
             "user": DIFY_USER,
             "files": files_payload,
         }

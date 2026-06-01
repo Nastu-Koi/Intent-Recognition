@@ -185,6 +185,7 @@ async def a2a_endpoint(agent_id: str, request: JSONRPCRequest) -> dict[str, Any]
         "a2a": True,
         "metadata": metadata,
         "agent_id": AGENT_ID,
+        "conversation_id": metadata.get("conversation_id", ""),
     }
 
     # 注入文件路径 (供 dify_file_uploader 使用)

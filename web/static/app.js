@@ -26,7 +26,13 @@ const sidebarNewChatBtn = document.getElementById('sidebar-new-chat-btn');
 
 // ─── Init ───
 document.addEventListener('DOMContentLoaded', () => {
-    localStorage.removeItem('intentRecognitionSessionId');
+    // 恢复保存的 sessionId（用于相同页面中的多轮对话）
+    const savedSessionId = localStorage.getItem('intentRecognitionSessionId');
+    if (savedSessionId) {
+        sessionId = savedSessionId;
+        console.log(`[Init] Restored sessionId from localStorage: ${sessionId}`);
+    }
+    
     loadRoles();
     loadConversations();
     chatInput.focus();
@@ -111,8 +117,7 @@ async function sendMessage() {
             await sendTextStream(text, messageEl, thinkingChain);
         }
 
-        // Update session
-        adoptSessionId(messageEl.dataset.sessionId);
+        // 不需要再调用一次 adoptSessionId，因为 processStreamResponse 中已经调用过了
 
     } catch (e) {
         if (e.name !== 'AbortError') {
@@ -164,7 +169,15 @@ function adoptSessionId(nextSessionId) {
 
     const isNew = !sessionId || sessionId !== nextSessionId;
     sessionId = nextSessionId;
-    if (isNew) loadConversations();
+    
+    // 保存 sessionId 到 localStorage（用于相同页面中的多轮对话）
+    localStorage.setItem('intentRecognitionSessionId', sessionId);
+    console.log(`[adoptSessionId] Updated sessionId: ${sessionId}`);
+    
+    if (isNew) {
+        console.log(`[adoptSessionId] New session detected, loading conversations`);
+        loadConversations();
+    }
 }
 
 
@@ -195,6 +208,8 @@ async function sendTextStream(query) {
     const role = roleSelect.value || null;
     const url = `${API_BASE}/chat-stream`;
     
+    console.log(`[sendTextStream] Sending query with sessionId: ${sessionId}`);
+    
     const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -214,8 +229,11 @@ async function sendWithFilesStream(query) {
     const formData = new FormData();
     formData.append('query', query);
     if (role) formData.append('role', role);
+    // Always append session_id (even if null) to maintain consistency with sendTextStream
     if (sessionId) formData.append('session_id', sessionId);
     pendingFiles.forEach(f => formData.append('files', f));
+
+    console.log(`[sendWithFilesStream] Sending query with sessionId: ${sessionId}`);
 
     const response = await fetch(`${API_BASE}/chat-with-files-stream`, {
         method: 'POST',

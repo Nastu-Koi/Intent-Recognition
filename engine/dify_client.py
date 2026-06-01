@@ -84,7 +84,14 @@ class DifyClient:
         response.raise_for_status()
         return response.json()
 
-    def chat(self, query: str, inputs: dict[str, Any] | None = None, user: str = "intent-recognition") -> str:
+    def chat(
+        self,
+        query: str,
+        inputs: dict[str, Any] | None = None,
+        user: str = "intent-recognition",
+        conversation_id: str = "",
+        return_metadata: bool = False,
+    ) -> str | dict[str, Any]:
         # 从 inputs 中提取 file_ids 并构建 files 参数
         files = []
         processed_inputs = dict(inputs or {})
@@ -107,20 +114,34 @@ class DifyClient:
                         "upload_file_id": fid,
                     })
         
-        data = self._post(
-            "/chat-messages",
-            {
-                "inputs": processed_inputs,
-                "query": query,
-                "response_mode": "blocking",
-                "conversation_id": "",
-                "user": user,
-                "files": files,
-            },
-        )
-        return data.get("answer") or data.get("text") or str(data)
+        payload = {
+            "inputs": processed_inputs,
+            "query": query,
+            "response_mode": "blocking",
+            "user": user,
+            "files": files,
+        }
+        if conversation_id:
+            payload["conversation_id"] = conversation_id
 
-    def workflow(self, query: str, inputs: dict[str, Any] | None = None, user: str = "intent-recognition") -> str:
+        data = self._post("/chat-messages", payload)
+        answer = data.get("answer") or data.get("text") or str(data)
+        if return_metadata:
+            return {
+                "answer": answer,
+                "conversation_id": data.get("conversation_id") or conversation_id,
+                "raw": data,
+            }
+        return answer
+
+    def workflow(
+        self,
+        query: str,
+        inputs: dict[str, Any] | None = None,
+        user: str = "intent-recognition",
+        conversation_id: str = "",
+        return_metadata: bool = False,
+    ) -> str | dict[str, Any]:
         workflow_inputs = dict(inputs or {})
         workflow_inputs.setdefault("query", query)
         
@@ -147,6 +168,8 @@ class DifyClient:
             "response_mode": "blocking",
             "user": user,
         }
+        if conversation_id:
+            payload["conversation_id"] = conversation_id
         if files:
             payload["files"] = files
         
@@ -155,11 +178,30 @@ class DifyClient:
             payload,
         )
         outputs = (data.get("data") or {}).get("outputs") or data.get("outputs") or {}
+        conversation_id_from_response = (
+            data.get("conversation_id")
+            or (data.get("data") or {}).get("conversation_id")
+            or conversation_id
+        )
         if isinstance(outputs, dict):
             for key in ("answer", "result", "text", "output"):
                 if key in outputs:
-                    return str(outputs[key])
-        return str(outputs or data)
+                    answer = str(outputs[key])
+                    if return_metadata:
+                        return {
+                            "answer": answer,
+                            "conversation_id": conversation_id_from_response,
+                            "raw": data,
+                        }
+                    return answer
+        answer = str(outputs or data)
+        if return_metadata:
+            return {
+                "answer": answer,
+                "conversation_id": conversation_id_from_response,
+                "raw": data,
+            }
+        return answer
 
     def retrieve(self, dataset_id: str, query: str, top_k: int = 3) -> list[dict[str, Any]]:
         data = self._post(
@@ -205,14 +247,28 @@ def query_dify_app(
     query: str,
     inputs: dict[str, Any] | None = None,
     user: str = "intent-recognition",
-) -> str:
+    conversation_id: str = "",
+    return_metadata: bool = False,
+) -> str | dict[str, Any]:
     client = DifyClient.from_env(agent_id=agent_id)
     app_type = os.getenv(f"DIFY_{agent_id.upper()}_APP_TYPE", os.getenv("DIFY_APP_TYPE", "chat"))
     app_type = app_type.lower()
 
     if app_type == "workflow":
-        return client.workflow(query=query, inputs=inputs, user=user)
-    return client.chat(query=query, inputs=inputs, user=user)
+        return client.workflow(
+            query=query,
+            inputs=inputs,
+            user=user,
+            conversation_id=conversation_id,
+            return_metadata=return_metadata,
+        )
+    return client.chat(
+        query=query,
+        inputs=inputs,
+        user=user,
+        conversation_id=conversation_id,
+        return_metadata=return_metadata,
+    )
 
 
 def query_dify_dataset(

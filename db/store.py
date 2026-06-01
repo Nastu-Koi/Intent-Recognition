@@ -29,45 +29,81 @@ class ConversationStore:
 
     async def init_db(self):
         """初始化元数据表。"""
-        async with self.pool.connection() as conn:
-            async with conn.cursor() as cur:
-                # 创建会话元数据表
-                await cur.execute("""
-                    CREATE TABLE IF NOT EXISTS conversation_metadata (
-                        session_id   TEXT PRIMARY KEY,
-                        title        TEXT NOT NULL,
-                        role         TEXT DEFAULT '',
-                        last_reply   TEXT DEFAULT '',
-                        created_at   TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                        updated_at   TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                        message_count INTEGER DEFAULT 0
-                    );
-                """)
-                # 确保索引存在
-                await cur.execute("CREATE INDEX IF NOT EXISTS idx_cm_updated_at ON conversation_metadata (updated_at DESC);")
-                
-                # 迁移：为现有表添加 last_reply 列（如果不存在）
-                await cur.execute("""
-                    ALTER TABLE conversation_metadata
-                    ADD COLUMN IF NOT EXISTS last_reply TEXT DEFAULT '';
-                """)
-                
-                # 创建暂停会话上下文表
-                await cur.execute("""
-                    CREATE TABLE IF NOT EXISTS paused_context (
-                        id              SERIAL PRIMARY KEY,
-                        session_id      TEXT NOT NULL,
-                        paused_state    JSONB NOT NULL,
-                        created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                        archived_at     TIMESTAMP WITH TIME ZONE,
-                        new_session_id  TEXT
-                    );
-                """)
-                await cur.execute("CREATE INDEX IF NOT EXISTS idx_pc_session_id ON paused_context (session_id);")
-                await cur.execute("CREATE INDEX IF NOT EXISTS idx_pc_created_at ON paused_context (created_at DESC);")
-                
-                await conn.commit()
-        logger.info("Database conversation_metadata and paused_context tables initialized.")
+        try:
+            async with self.pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    # 创建会话元数据表
+                    await cur.execute("""
+                        CREATE TABLE IF NOT EXISTS conversation_metadata (
+                            session_id   TEXT PRIMARY KEY,
+                            title        TEXT NOT NULL,
+                            role         TEXT DEFAULT '',
+                            last_reply   TEXT DEFAULT '',
+                            created_at   TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                            updated_at   TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                            message_count INTEGER DEFAULT 0
+                        );
+                    """)
+                    logger.debug("Created conversation_metadata table")
+                    
+                    # 确保索引存在
+                    await cur.execute("CREATE INDEX IF NOT EXISTS idx_cm_updated_at ON conversation_metadata (updated_at DESC);")
+                    
+                    # 迁移：为现有表添加 last_reply 列（如果不存在）
+                    await cur.execute("""
+                        ALTER TABLE conversation_metadata
+                        ADD COLUMN IF NOT EXISTS last_reply TEXT DEFAULT '';
+                    """)
+                    
+                    # 创建暂停会话上下文表
+                    await cur.execute("""
+                        CREATE TABLE IF NOT EXISTS paused_context (
+                            id              SERIAL PRIMARY KEY,
+                            session_id      TEXT NOT NULL,
+                            paused_state    JSONB NOT NULL,
+                            created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                            archived_at     TIMESTAMP WITH TIME ZONE,
+                            new_session_id  TEXT
+                        );
+                    """)
+                    logger.debug("Created paused_context table")
+                    await cur.execute("CREATE INDEX IF NOT EXISTS idx_pc_session_id ON paused_context (session_id);")
+                    await cur.execute("CREATE INDEX IF NOT EXISTS idx_pc_created_at ON paused_context (created_at DESC);")
+                    
+                    # 创建 session_id -> conversation_id 映射表（用于 Dify 多轮对话）
+                    await cur.execute("""
+                        CREATE TABLE IF NOT EXISTS session_conversation_mapping (
+                            session_id      TEXT PRIMARY KEY,
+                            conversation_id TEXT NOT NULL UNIQUE,
+                            source          TEXT NOT NULL DEFAULT 'dify',
+                            created_at      TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                        );
+                    """)
+                    logger.info("Created session_conversation_mapping table")
+                    await cur.execute("""
+                        ALTER TABLE session_conversation_mapping
+                        ADD COLUMN IF NOT EXISTS source TEXT;
+                    """)
+                    await cur.execute("""
+                        UPDATE session_conversation_mapping
+                        SET source = 'legacy'
+                        WHERE source IS NULL;
+                    """)
+                    await cur.execute("""
+                        ALTER TABLE session_conversation_mapping
+                        ALTER COLUMN source SET DEFAULT 'dify';
+                    """)
+                    await cur.execute("""
+                        ALTER TABLE session_conversation_mapping
+                        ALTER COLUMN source SET NOT NULL;
+                    """)
+                    await cur.execute("CREATE INDEX IF NOT EXISTS idx_scm_conversation_id ON session_conversation_mapping (conversation_id);")
+                    
+                    await conn.commit()
+            logger.info("Database tables initialization complete: conversation_metadata, paused_context, session_conversation_mapping")
+        except Exception as e:
+            logger.error(f"Failed to initialize database tables: {e}", exc_info=True)
+            raise
 
     async def upsert_conversation(self, session_id: str, title: str, role: str, message_count: int, last_reply: str = ""):
         """新建或更新会话元数据。"""
@@ -171,3 +207,117 @@ class ConversationStore:
                 """, (new_session_id, session_id))
                 await conn.commit()
         logger.info(f"Paused context archived: session={session_id}, new_session={new_session_id}")
+
+    # ─── Conversation ID 映射管理 ───
+    async def get_or_create_conversation_id(self, session_id: str) -> str:
+        """
+        获取或创建 session_id 对应的 Dify conversation_id。
+        
+        如果该 session_id 已有映射，返回现有的 conversation_id。
+        否则生成新的 conversation_id 并保存映射。
+        
+        Args:
+            session_id: 会话 ID
+            
+        Returns:
+            Dify conversation_id
+        """
+        import uuid
+        
+        try:
+            async with self.pool.connection() as conn:
+                async with conn.cursor() as cur:
+                    # 先尝试查询现有映射
+                    logger.debug(f"[get_or_create_conversation_id] Querying for session_id={session_id}")
+                    await cur.execute(
+                        "SELECT conversation_id FROM session_conversation_mapping WHERE session_id = %s;",
+                        (session_id,)
+                    )
+                    result = await cur.fetchone()
+                    
+                    if result:
+                        logger.info(f"[get_or_create_conversation_id] Found existing mapping: session={session_id}, conversation_id={result[0]}")
+                        return result[0]
+                    
+                    # 生成新的 conversation_id
+                    conversation_id = str(uuid.uuid4())
+                    logger.debug(f"[get_or_create_conversation_id] Generating new conversation_id={conversation_id} for session={session_id}")
+                    
+                    try:
+                        await cur.execute(
+                            """
+                            INSERT INTO session_conversation_mapping (session_id, conversation_id, source)
+                            VALUES (%s, %s, 'local');
+                            """,
+                            (session_id, conversation_id)
+                        )
+                        await conn.commit()
+                        logger.info(f"[get_or_create_conversation_id] Created mapping: session={session_id}, conversation_id={conversation_id}")
+                        return conversation_id
+                    except Exception as insert_err:
+                        # 如果并发冲突，重新查询
+                        logger.warning(f"[get_or_create_conversation_id] Insert failed ({type(insert_err).__name__}): {insert_err}, retrying with new connection...")
+                        
+                        # 创建新连接进行重试
+                        async with self.pool.connection() as retry_conn:
+                            async with retry_conn.cursor() as retry_cur:
+                                await retry_cur.execute(
+                                    "SELECT conversation_id FROM session_conversation_mapping WHERE session_id = %s;",
+                                    (session_id,)
+                                )
+                                result = await retry_cur.fetchone()
+                                if result:
+                                    logger.info(f"[get_or_create_conversation_id] Found mapping on retry: session={session_id}, conversation_id={result[0]}")
+                                    return result[0]
+                        
+                        # 重试失败，记录错误并返回空字符串而不是抛出异常
+                        logger.error(f"[get_or_create_conversation_id] Failed to get or create mapping for session={session_id}: {insert_err}")
+                        return ""
+        except Exception as e:
+            logger.error(f"[get_or_create_conversation_id] Unexpected error for session={session_id}: {e}", exc_info=True)
+            return ""
+    
+    async def get_conversation_id(self, session_id: str) -> Optional[str]:
+        """
+        获取 session_id 对应的 conversation_id。
+        
+        Args:
+            session_id: 会话 ID
+            
+        Returns:
+            conversation_id 或 None（如果不存在）
+        """
+        async with self.pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    SELECT conversation_id FROM session_conversation_mapping
+                    WHERE session_id = %s AND source = 'dify';
+                    """,
+                    (session_id,)
+                )
+                result = await cur.fetchone()
+                return result[0] if result else None
+
+    async def set_conversation_id(self, session_id: str, conversation_id: str):
+        """保存或更新 session_id 对应的真实 Dify conversation_id。"""
+        if not session_id or not conversation_id:
+            return
+
+        async with self.pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    """
+                    INSERT INTO session_conversation_mapping (session_id, conversation_id, source)
+                    VALUES (%s, %s, 'dify')
+                    ON CONFLICT (session_id) DO UPDATE SET
+                        conversation_id = EXCLUDED.conversation_id,
+                        source = 'dify';
+                    """,
+                    (session_id, conversation_id),
+                )
+                await conn.commit()
+        logger.info(
+            f"[set_conversation_id] Saved mapping: session={session_id}, "
+            f"conversation_id={conversation_id}"
+        )

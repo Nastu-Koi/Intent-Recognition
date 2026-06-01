@@ -53,6 +53,7 @@ class DifyExpenseAssistantAgent(SubAgent):
         """
         query = input_data.get("query", "")
         context = input_data.get("context", {})
+        conversation_id = context.get("conversation_id", "")
 
         # 构建 Dify inputs
         inputs: Dict[str, Any] = {}
@@ -81,7 +82,8 @@ class DifyExpenseAssistantAgent(SubAgent):
                 inputs["file_id"] = file_ids[0]
 
         logger.info(
-            f"[DifyExpenseAssistant] query={query[:100]}... | file_ids={file_ids}"
+            f"[DifyExpenseAssistant] query={query[:100]}... | "
+            f"file_ids={file_ids} | conversation_id={conversation_id or '<new>'}"
         )
 
         try:
@@ -90,11 +92,20 @@ class DifyExpenseAssistantAgent(SubAgent):
                 query=query,
                 inputs=inputs if inputs else None,
                 user="intent-recognition",
+                conversation_id=conversation_id,
+                return_metadata=True,
             )
+            if isinstance(result, dict):
+                answer = result.get("answer", "")
+                dify_conversation_id = result.get("conversation_id", "")
+            else:
+                answer = result
+                dify_conversation_id = conversation_id
             return {
                 "status": "success",
-                "result": result,
+                "result": answer,
                 "agent": self.agent_id,
+                "conversation_id": dify_conversation_id,
             }
         except Exception as e:
             logger.error(f"[DifyExpenseAssistant] Error: {e}")

@@ -22,6 +22,7 @@ from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.checkpoint.memory import MemorySaver
@@ -40,6 +41,17 @@ app = FastAPI(
     title="Intent-Recognition Service",
     description="LangGraph 多智能体编排系统 — Planner-Evaluator 架构",
     version="1.0.0",
+)
+
+# ─── CORS 配置 ───
+# 暴露必要的响应头，使前端能够访问 X-Session-Id
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["X-Session-Id"],  # 允许前端访问 X-Session-Id 响应头
 )
 
 # ─── 初始化 ───
@@ -245,6 +257,7 @@ async def _get_checkpoint_state(session_id: str) -> Dict[str, Any]:
                 "final_text": channel_values.get("final_text", ""),
                 "plan": channel_values.get("plan", {}),
                 "results": channel_values.get("results", {}),
+                "_agent_outputs": channel_values.get("_agent_outputs", {}),
                 "feedback_history": channel_values.get("feedback_history", []),
                 "conversation_route": channel_values.get("conversation_route", {}),
                 "iter": channel_values.get("iter", 0),
@@ -265,6 +278,15 @@ async def _get_checkpoint_state(session_id: str) -> Dict[str, Any]:
         logger.error(f"[_get_checkpoint_state] session={session_id} error: {e}")
     
     return {}
+
+
+def _extract_dify_conversation_id(state: Dict[str, Any]) -> str:
+    """Find a Dify conversation_id returned by a sub-agent."""
+    agent_outputs = state.get("_agent_outputs") or {}
+    for output in agent_outputs.values():
+        if isinstance(output, dict) and output.get("conversation_id"):
+            return str(output["conversation_id"])
+    return ""
 
 
 # ──────────────────────────────────────────────
@@ -546,6 +568,10 @@ async def chat(request: ChatRequest):
     # 多轮对话：从 checkpoint 恢复完整状态，包括思维链、评估结果等
     file_ctx = await _get_checkpoint_file_ctx(session_id)
     checkpoint_state = await _get_checkpoint_state(session_id)
+    conversation_id = ""
+    if _STORE:
+        conversation_id = await _STORE.get_conversation_id(session_id) or ""
+    conversation_id = conversation_id or _extract_dify_conversation_id(checkpoint_state)
     
     initial_state = {
         "messages": [HumanMessage(content=request.query)],
@@ -555,6 +581,7 @@ async def chat(request: ChatRequest):
         "available_agents": available_agents,
         "plan": checkpoint_state.get("plan", {}),
         "results": checkpoint_state.get("results", {}),
+        "_agent_outputs": checkpoint_state.get("_agent_outputs", {}),
         "iter": checkpoint_state.get("iter", 0),
         "feedback_history": checkpoint_state.get("feedback_history", []),
         "eval_action": checkpoint_state.get("eval_action", ""),
@@ -562,6 +589,7 @@ async def chat(request: ChatRequest):
         "final_text": checkpoint_state.get("final_text", ""),
         "thinking_chain": checkpoint_state.get("thinking_chain", []),
         "conversation_route": checkpoint_state.get("conversation_route", {}),
+        "conversation_id": conversation_id,
     }
 
     # ─── Step 4: 执行 LangGraph 图 ───
@@ -576,6 +604,9 @@ async def chat(request: ChatRequest):
         
         # 更新会话元数据 (异步不阻塞回复)
         if _STORE:
+            dify_conversation_id = _extract_dify_conversation_id(result)
+            if dify_conversation_id:
+                await _STORE.set_conversation_id(session_id, dify_conversation_id)
             # 摘要取用户输入前 40 字
             title = request.query[:40] if len(request.query) > 40 else request.query
             messages = result.get("messages", [])
@@ -680,6 +711,10 @@ async def chat_with_files(
 
     # 构建初始 State - 从 checkpoint 恢复完整状态
     checkpoint_state = await _get_checkpoint_state(sid)
+    conversation_id = ""
+    if _STORE:
+        conversation_id = await _STORE.get_conversation_id(sid) or ""
+    conversation_id = conversation_id or _extract_dify_conversation_id(checkpoint_state)
     initial_state = {
         "messages": [HumanMessage(content=query)],
         "query": query,
@@ -688,6 +723,7 @@ async def chat_with_files(
         "available_agents": available_agents,
         "plan": checkpoint_state.get("plan", {}),
         "results": checkpoint_state.get("results", {}),
+        "_agent_outputs": checkpoint_state.get("_agent_outputs", {}),
         "iter": checkpoint_state.get("iter", 0),
         "feedback_history": checkpoint_state.get("feedback_history", []),
         "eval_action": checkpoint_state.get("eval_action", ""),
@@ -695,6 +731,7 @@ async def chat_with_files(
         "final_text": checkpoint_state.get("final_text", ""),
         "thinking_chain": checkpoint_state.get("thinking_chain", []),
         "conversation_route": checkpoint_state.get("conversation_route", {}),
+        "conversation_id": conversation_id,
     }
 
     # 执行 LangGraph 图
@@ -709,6 +746,9 @@ async def chat_with_files(
 
         # 更新会话元数据
         if _STORE:
+            dify_conversation_id = _extract_dify_conversation_id(result)
+            if dify_conversation_id:
+                await _STORE.set_conversation_id(sid, dify_conversation_id)
             title = query[:40] if len(query) > 40 else query
             messages = result.get("messages", [])
             final_text = result.get("final_text", "")
@@ -798,6 +838,16 @@ async def chat_stream(request: ChatRequest):
     # 多轮对话：从 checkpoint 恢复完整状态，包括思维链、评估结果等
     file_ctx = await _get_checkpoint_file_ctx(session_id)
     checkpoint_state = await _get_checkpoint_state(session_id)
+    conversation_id = ""
+    if _STORE:
+        conversation_id = await _STORE.get_conversation_id(session_id) or ""
+    conversation_id = conversation_id or _extract_dify_conversation_id(checkpoint_state)
+    logger.info(
+        f"[ChatStream] Conversation mapping: session_id={session_id} | "
+        f"conversation_id={conversation_id or '<new>'} | "
+        f"client_session_id={request.session_id} | "
+        f"client_provided={'YES' if request.session_id else 'NO'}"
+    )
     
     initial_state = {
         "messages": [HumanMessage(content=request.query)],
@@ -807,6 +857,7 @@ async def chat_stream(request: ChatRequest):
         "available_agents": available_agents,
         "plan": checkpoint_state.get("plan", {}),
         "results": checkpoint_state.get("results", {}),
+        "_agent_outputs": checkpoint_state.get("_agent_outputs", {}),
         "iter": checkpoint_state.get("iter", 0),
         "feedback_history": checkpoint_state.get("feedback_history", []),
         "eval_action": checkpoint_state.get("eval_action", ""),
@@ -814,6 +865,7 @@ async def chat_stream(request: ChatRequest):
         "final_text": checkpoint_state.get("final_text", ""),
         "thinking_chain": checkpoint_state.get("thinking_chain", []),
         "conversation_route": checkpoint_state.get("conversation_route", {}),
+        "conversation_id": conversation_id,
     }
 
     # ─── Step 4: 使用 astream 流式执行 ───
@@ -837,6 +889,10 @@ async def chat_stream(request: ChatRequest):
             # 无论是正常完成还是异常中断，都要保存对话元数据
             # （实际的回答内容由前端通过 /save-partial-reply 端点保存）
             if _STORE:
+                final_state = await _get_checkpoint_state(session_id)
+                dify_conversation_id = _extract_dify_conversation_id(final_state)
+                if dify_conversation_id:
+                    await _STORE.set_conversation_id(session_id, dify_conversation_id)
                 title = request.query[:40] if len(request.query) > 40 else request.query
                 asyncio.create_task(_STORE.upsert_conversation(
                     session_id=session_id,
@@ -932,6 +988,16 @@ async def chat_with_files_stream(
 
     # 构建初始 State - 从 checkpoint 恢复完整状态
     checkpoint_state = await _get_checkpoint_state(sid)
+    conversation_id = ""
+    if _STORE:
+        conversation_id = await _STORE.get_conversation_id(sid) or ""
+    conversation_id = conversation_id or _extract_dify_conversation_id(checkpoint_state)
+    logger.info(
+        f"[ChatWithFilesStream] Conversation mapping: session_id={sid} | "
+        f"conversation_id={conversation_id or '<new>'} | "
+        f"client_session_id={session_id} | "
+        f"client_provided={'YES' if session_id else 'NO'}"
+    )
     initial_state = {
         "messages": [HumanMessage(content=query)],
         "query": query,
@@ -940,6 +1006,7 @@ async def chat_with_files_stream(
         "available_agents": available_agents,
         "plan": checkpoint_state.get("plan", {}),
         "results": checkpoint_state.get("results", {}),
+        "_agent_outputs": checkpoint_state.get("_agent_outputs", {}),
         "iter": checkpoint_state.get("iter", 0),
         "feedback_history": checkpoint_state.get("feedback_history", []),
         "eval_action": checkpoint_state.get("eval_action", ""),
@@ -947,6 +1014,7 @@ async def chat_with_files_stream(
         "final_text": checkpoint_state.get("final_text", ""),
         "thinking_chain": checkpoint_state.get("thinking_chain", []),
         "conversation_route": checkpoint_state.get("conversation_route", {}),
+        "conversation_id": conversation_id,
     }
 
     # 使用 astream 流式执行
@@ -969,6 +1037,10 @@ async def chat_with_files_stream(
             # 无论是正常完成还是异常中断，都要保存对话元数据
             # （实际的回答内容由前端通过 /save-partial-reply 端点保存）
             if _STORE:
+                final_state = await _get_checkpoint_state(sid)
+                dify_conversation_id = _extract_dify_conversation_id(final_state)
+                if dify_conversation_id:
+                    await _STORE.set_conversation_id(sid, dify_conversation_id)
                 title = query[:40] if len(query) > 40 else query
                 asyncio.create_task(_STORE.upsert_conversation(
                     session_id=sid,

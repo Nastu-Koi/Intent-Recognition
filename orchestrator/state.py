@@ -142,6 +142,7 @@ class OrchestratorState(MessagesState):
     file_ctx: Annotated[Optional[Dict[str, Any]], _merge_file_ctx]  # 文件上下文 (合并 reducer，多轮不丢失)
     role: str                                                   # 用户角色
     available_agents: List[Dict[str, Any]]                      # 可用 Agent 描述列表
+    conversation_id: str                                        # Dify 多轮对话 ID
 
     # 动态数据
     plan: Dict[str, Any]                                        # Planner 输出的任务计划
