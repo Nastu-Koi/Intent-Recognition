@@ -185,7 +185,7 @@ async def final_reply_node(state: OrchestratorState) -> dict:
             "plan_rationale": result_dict["plan_rationale"],
             "eval_action": result_dict["eval_action"],
             "agent_results": {
-                k: str(v)[:200]
+                k: str(v)
                 for k, v in (result_dict["agent_results"] or {}).items()
                 if not k.startswith("_")
             },
@@ -193,6 +193,16 @@ async def final_reply_node(state: OrchestratorState) -> dict:
                 {
                     "iteration": item.get("iteration", 0),
                     "plan_rationale": item.get("plan_rationale", ""),
+                    "agent_results": {
+                        k: str(v)
+                        for k, v in (item.get("agent_results") or {}).items()
+                        if not k.startswith("_")
+                    },
+                    "agent_names": {
+                        k: str(v)
+                        for k, v in (item.get("agent_names") or {}).items()
+                        if not k.startswith("_")
+                    },
                     "eval_action": item.get("eval_action", ""),
                     "eval_thought": item.get("eval_thought", ""),
                 }

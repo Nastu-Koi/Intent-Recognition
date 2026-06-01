@@ -7,6 +7,10 @@ let sessionId = null;
 let pendingFiles = [];
 let currentStreamingController = null; // For stopping stream generation
 let isGenerating = false; // Track generation state
+const AGENT_DISPLAY_NAMES = {
+    expense_assistant: '报销助手',
+    general_chat: '通用对话助手',
+};
 
 // ─── DOM Elements ───
 const chatArea = document.getElementById('chat-area');
@@ -295,6 +299,31 @@ function upsertAgentProgress(contentEl, eventData) {
 }
 
 
+function renderAgentResultsHtml(agentResults, labels = {}) {
+    if (!agentResults || typeof agentResults !== 'object') return '';
+
+    const entries = Object.entries(agentResults).filter(([agentId]) => !agentId.startsWith('_'));
+    if (entries.length === 0) return '';
+
+    const completedLabel = labels.completed || '✓ 已完成 Agent';
+    const agentNames = labels.agentNames || {};
+    return `
+        <div class="agent-list">
+            ${entries.map(([agentId, result]) => {
+                const preview = String(result || '');
+                const agentName = agentNames[agentId] || AGENT_DISPLAY_NAMES[agentId] || agentId;
+                return `
+                    <div class="agent-item completed">
+                        <div class="agent-executing">${completedLabel}: <strong>${escapeHtml(agentName)}</strong></div>
+                        <div class="agent-result-preview">${escapeHtml(preview)}</div>
+                    </div>
+                `;
+            }).join('')}
+        </div>
+    `;
+}
+
+
 async function processStreamResponse(response, messageEl, thinkingChain) {
     if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -320,6 +349,7 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
     let accumulatedContent = ''; // 累积所有已显示过的内容
     let streamingTokens = false; // 是否正在通过 token 流式输出
     let streamedRawText = ''; // 流式期间累积的纯文本
+    const agentNameMap = {};
 
     const contentEl = messageEl.querySelector('.streaming-content');
     const detailsEl = messageEl.querySelector('.process-details');
@@ -411,6 +441,9 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                     break;
 
                                 case 'agent_progress':
+                                    if (eventData.agent_id && eventData.agent_name) {
+                                        agentNameMap[eventData.agent_id] = eventData.agent_name;
+                                    }
                                     upsertAgentProgress(contentEl, eventData);
                                     if (eventData.status === 'completed' && eventData.result_preview) {
                                         const progressAgentName = eventData.agent_name || eventData.agent_id;
@@ -421,6 +454,9 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                 case 'agent_result':
                                     agentResults[eventData.agent_id] = eventData.result_preview;
                                     const agentName = eventData.agent_name || eventData.agent_id;
+                                    if (eventData.agent_id && agentName) {
+                                        agentNameMap[eventData.agent_id] = agentName;
+                                    }
                                     upsertAgentProgress(contentEl, {
                                         agent_id: eventData.agent_id,
                                         agent_name: agentName,
@@ -508,7 +544,7 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                         thinkingChain = eventData.thinking_chain;
                                     }
                                     if (Object.keys(agentResults).length > 0 || planRationale || evalAction) {
-                                        buildProcessDetails(detailsEl, thinkingChain, totalIterations);
+                                        buildProcessDetails(detailsEl, thinkingChain, totalIterations, agentNameMap);
                                     }
                                     streamingTokens = false;
                                     break;
@@ -530,7 +566,7 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                     if (!eventData.streamed) {
                                         contentEl.innerHTML = formatMarkdown(finalAnswer);
                                         if (Object.keys(agentResults).length > 0 || planRationale || evalAction) {
-                                            buildProcessDetails(detailsEl, thinkingChain, totalIterations);
+                                            buildProcessDetails(detailsEl, thinkingChain, totalIterations, agentNameMap);
                                         }
                                     }
                                     break;
@@ -635,7 +671,7 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
     }
 }
 
-function buildProcessDetails(detailsEl, thinkingChain, totalIterations) {
+function buildProcessDetails(detailsEl, thinkingChain, totalIterations, agentNameMap = {}) {
     detailsEl.innerHTML = '';
 
     const toggle = document.createElement('button');
@@ -657,21 +693,18 @@ function buildProcessDetails(detailsEl, thinkingChain, totalIterations) {
         // 只要有任何内容就显示，不要求必须有plan_rationale或eval_action
         const hasContent = item && (item.plan_rationale || item.agent_results || item.eval_action || item.eval_thought);
         if (hasContent) {
-            console.log(`[BuildProcessDetails] Iteration ${index}:`, item); // 调试日志
             html += `<div class="iteration"><h4>第 ${item.iteration || index + 1} 轮迭代</h4>`;
             if (item.plan_rationale) {
                 html += `<div class="process-item"><div class="process-label">🧠 规划思路</div>${escapeHtml(item.plan_rationale)}</div>`;
             }
             // 添加 Agent 执行阶段的结果 (在评估决策之前)
             if (item.agent_results && typeof item.agent_results === 'object' && Object.keys(item.agent_results).length > 0) {
-                console.log(`[BuildProcessDetails] Found agent_results for iteration ${index}:`, item.agent_results); // 调试日志
-                html += `<div class="process-item"><div class="process-label">📊 Agent 执行结果</div>`;
-                for (const [agentId, result] of Object.entries(item.agent_results)) {
-                    if (!agentId.startsWith('_')) {
-                        html += `<div><strong>${escapeHtml(agentId)}</strong>: ${escapeHtml(String(result).substring(0, 150))}</div>`;
-                    }
+                const agentResultsHtml = renderAgentResultsHtml(item.agent_results, {
+                    agentNames: { ...(item.agent_names || {}), ...agentNameMap },
+                });
+                if (agentResultsHtml) {
+                    html += `<div class="process-item"><div class="process-label">📊 Agent 执行结果</div>${agentResultsHtml}</div>`;
                 }
-                html += `</div>`;
             }
             if (item.eval_action) {
                 const emoji = { PASS: '✅', PARTIAL_ACCEPT: '⚠️', NEEDS_REVISION: '🔄' }[item.eval_action] || '❓';
@@ -727,7 +760,7 @@ function appendAgentMessage(text, result) {
 
         const toggle = document.createElement('button');
         toggle.className = 'process-toggle';
-        const validItems = result.thinking_chain.filter(item => item && (item.plan_rationale || item.eval_action)).length;
+        const validItems = result.thinking_chain.filter(item => item && (item.plan_rationale || item.agent_results || item.eval_action)).length;
         toggle.innerHTML = `<span class="arrow">▶</span> 查看完整 Agent 思考过程 (${validItems} 轮迭代)`;
         toggle.onclick = () => {
             toggle.classList.toggle('open');
@@ -751,11 +784,12 @@ function appendAgentMessage(text, result) {
                 html += `<div class="process-item"><div class="process-label">🧐 评估分析</div>${escapeHtml(item.eval_thought)}</div>`;
             }
             if (item.agent_results && Object.keys(item.agent_results).length > 0) {
-                html += `<div class="process-item"><div class="process-label">📊 Agent 结果</div>`;
-                for (const [k, v] of Object.entries(item.agent_results)) {
-                    html += `<div><strong>${escapeHtml(k)}</strong>: ${escapeHtml(String(v))}</div>`;
+                const agentResultsHtml = renderAgentResultsHtml(item.agent_results, {
+                    agentNames: item.agent_names || {},
+                });
+                if (agentResultsHtml) {
+                    html += `<div class="process-item"><div class="process-label">📊 Agent 执行结果</div>${agentResultsHtml}</div>`;
                 }
-                html += `</div>`;
             }
             html += `</div>`;
         });
@@ -1013,11 +1047,13 @@ function appendThinkingToBubble(bubble, thinking_chain) {
             html += `<div class="process-item"><div class="process-label">🧠 Rationale</div>${escapeHtml(item.plan_rationale)}</div>`;
         }
         if (item.agent_results && Object.keys(item.agent_results).length > 0) {
-            html += `<div class="process-item"><div class="process-label">📊 Results</div>`;
-            for (const [k, v] of Object.entries(item.agent_results)) {
-                html += `<div><strong>${escapeHtml(k)}</strong>: ${escapeHtml(String(v))}</div>`;
+            const agentResultsHtml = renderAgentResultsHtml(item.agent_results, {
+                completed: '✓ Completed Agent',
+                agentNames: item.agent_names || {},
+            });
+            if (agentResultsHtml) {
+                html += `<div class="process-item"><div class="process-label">📊 Results</div>${agentResultsHtml}</div>`;
             }
-            html += `</div>`;
         }
         if (item.eval_action) {
             const emoji = { PASS: '✅', PARTIAL_ACCEPT: '⚠️', NEEDS_REVISION: '🔄' }[item.eval_action] || '❓';

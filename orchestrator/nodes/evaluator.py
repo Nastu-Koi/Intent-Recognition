@@ -50,6 +50,12 @@ async def evaluator_node(state: OrchestratorState) -> dict:
     results = state.get("results", {})
     current_iter = state.get("iter", 1)
     feedback_history = state.get("feedback_history", [])
+    available_agents = state.get("available_agents", [])
+    agent_name_map = {
+        agent.get("agent_id"): agent.get("name", agent.get("agent_id"))
+        for agent in available_agents
+        if isinstance(agent, dict) and agent.get("agent_id")
+    }
 
     # ─── 构建 Sub Agents 结果展示 ───
     if results:
@@ -183,6 +189,11 @@ async def evaluator_node(state: OrchestratorState) -> dict:
             "eval_action": eval_result.action,
             "eval_thought": eval_result.thought,
             "agent_results": results.copy() if isinstance(results, dict) else results,
+            "agent_names": {
+                agent_id: agent_name_map.get(agent_id, agent_id)
+                for agent_id in (results.keys() if isinstance(results, dict) else [])
+                if not agent_id.startswith("_")
+            },
         }
         thinking_chain.append(current_thinking)
         update["thinking_chain"] = thinking_chain
