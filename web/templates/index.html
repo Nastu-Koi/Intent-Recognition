@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Intent-Recognition 多智能体编排系统 — 基于 LangGraph 的 Planner-Evaluator 架构">
     <title>Intent-Recognition Agent</title>
-    <link rel="stylesheet" href="/static/style.css?v=20260601-agent-results">
+    <link rel="stylesheet" href="/static/style.css?v=20260609-skill-prompt">
 </head>
 <body>
     <div class="app-container">
@@ -57,13 +57,14 @@
                     <button class="quick-action" onclick="quickAction('公司的报销流程是什么？')">📋 知识库问答</button>
                     <button class="quick-action" onclick="quickAction('帮我总结一下这份文档的要点')">📝 文档总结</button>
                     <button class="quick-action" onclick="quickAction('识别这张图片上的内容')">🖼️ 图片识别</button>
-                    <button class="quick-action" onclick="quickAction('你好，你能做什么？')">👋 打个招呼</button>
+                    <button class="quick-action" onclick="showSkillsPanel()">Skills</button>
                 </div>
             </div>
         </div>
 
         <!-- Input Area -->
         <div class="input-area">
+            <div id="selected-skill-preview" class="selected-skill-preview"></div>
             <div id="file-preview" class="file-preview"></div>
             <div class="input-row">
                 <button id="upload-btn" class="btn-upload" title="上传文件">📎</button>
@@ -78,6 +79,6 @@
         </main>
     </div>
 
-    <script src="/static/app.js?v=20260601-agent-results"></script>
+    <script src="/static/app.js?v=20260609-skill-prompt"></script>
 </body>
 </html>

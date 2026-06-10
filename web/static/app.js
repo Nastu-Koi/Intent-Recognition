@@ -5,6 +5,7 @@
 const API_BASE = '';
 let sessionId = null;
 let pendingFiles = [];
+let selectedSkill = null;
 let currentStreamingController = null; // For stopping stream generation
 let isGenerating = false; // Track generation state
 const AGENT_DISPLAY_NAMES = {
@@ -19,6 +20,7 @@ const sendBtn = document.getElementById('send-btn');
 const uploadBtn = document.getElementById('upload-btn');
 const fileInput = document.getElementById('file-input');
 const filePreview = document.getElementById('file-preview');
+const selectedSkillPreview = document.getElementById('selected-skill-preview');
 const roleSelect = document.getElementById('role-select');
 const newChatBtn = document.getElementById('new-chat-btn');
 const welcomeContainer = document.getElementById('welcome-container');
@@ -27,6 +29,7 @@ const toggleSidebarBtn = document.getElementById('toggle-sidebar-btn');
 const closeSidebarBtn = document.getElementById('close-sidebar-btn');
 const conversationList = document.getElementById('conversation-list');
 const sidebarNewChatBtn = document.getElementById('sidebar-new-chat-btn');
+const welcomeHomeHtml = welcomeContainer ? welcomeContainer.innerHTML : '';
 
 // ─── Init ───
 document.addEventListener('DOMContentLoaded', () => {
@@ -184,6 +187,114 @@ function adoptSessionId(nextSessionId) {
     }
 }
 
+function renderWelcomeHome() {
+    if (!welcomeContainer) return;
+    welcomeContainer.innerHTML = welcomeHomeHtml;
+    welcomeContainer.classList.remove('skills-mode');
+}
+
+function setWelcomeVisible(visible) {
+    if (!welcomeContainer) return;
+    welcomeContainer.style.display = visible ? 'flex' : 'none';
+    if (visible && !chatArea.contains(welcomeContainer)) {
+        chatArea.appendChild(welcomeContainer);
+    }
+}
+
+async function showSkillsPanel() {
+    if (!welcomeContainer) return;
+    setWelcomeVisible(true);
+    welcomeContainer.classList.add('skills-mode');
+    welcomeContainer.innerHTML = `
+        <div class="skills-header">
+            <button class="skills-back-btn" type="button" onclick="renderWelcomeHome()">‹</button>
+            <div>
+                <h1 class="welcome-title">Skills</h1>
+                <p class="welcome-desc">选择一个已安装的 skill 作为当前输入上下文。</p>
+            </div>
+        </div>
+        <div class="skills-list" id="skills-list">
+            <div class="skills-state">正在加载已安装的 skills...</div>
+        </div>
+    `;
+
+    try {
+        const res = await fetch(`${API_BASE}/skills`);
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        renderSkillsList(data.skills || []);
+    } catch (e) {
+        const listEl = document.getElementById('skills-list');
+        if (listEl) {
+            listEl.innerHTML = `<div class="skills-state error">加载失败：${escapeHtml(e.message)}</div>`;
+        }
+    }
+}
+
+function renderSkillsList(skills) {
+    const listEl = document.getElementById('skills-list');
+    if (!listEl) return;
+
+    if (!skills.length) {
+        listEl.innerHTML = '<div class="skills-state">暂无已安装的 skills。</div>';
+        return;
+    }
+
+    listEl.innerHTML = '';
+    skills.forEach(skill => {
+        const item = document.createElement('button');
+        item.className = 'skill-item';
+        item.type = 'button';
+        item.onclick = () => selectSkill(skill);
+
+        const name = document.createElement('span');
+        name.className = 'skill-name';
+        name.textContent = skill.name || 'Unnamed skill';
+
+        const description = document.createElement('span');
+        description.className = 'skill-description';
+        description.textContent = skill.description || 'No description';
+
+        item.appendChild(name);
+        item.appendChild(description);
+        listEl.appendChild(item);
+    });
+}
+
+function selectSkill(skill) {
+    selectedSkill = {
+        name: skill.name || 'Unnamed skill',
+        description: skill.description || '',
+    };
+    renderSelectedSkillTag();
+    renderWelcomeHome();
+    setWelcomeVisible(true);
+    chatInput.focus();
+}
+
+function renderSelectedSkillTag() {
+    if (!selectedSkillPreview) return;
+    selectedSkillPreview.innerHTML = '';
+    if (!selectedSkill) return;
+
+    const tag = document.createElement('div');
+    tag.className = 'selected-skill-tag';
+    tag.title = selectedSkill.description || selectedSkill.name;
+    tag.innerHTML = `
+        <span class="selected-skill-label">Skill</span>
+        <span class="selected-skill-name">${escapeHtml(selectedSkill.name)}</span>
+        <button class="selected-skill-remove" type="button" title="移除 skill" onclick="clearSelectedSkill()">✕</button>
+    `;
+    selectedSkillPreview.appendChild(tag);
+}
+
+function clearSelectedSkill() {
+    selectedSkill = null;
+    renderSelectedSkillTag();
+    chatInput.focus();
+}
 
 function createStreamingMessageElement() {
     const msg = document.createElement('div');
@@ -221,6 +332,7 @@ async function sendTextStream(query) {
             query,
             role,
             session_id: sessionId,
+            selected_skill: selectedSkill ? selectedSkill.name : null,
         }),
         signal: currentStreamingController.signal,
     });
@@ -233,6 +345,7 @@ async function sendWithFilesStream(query) {
     const formData = new FormData();
     formData.append('query', query);
     if (role) formData.append('role', role);
+    if (selectedSkill) formData.append('selected_skill', selectedSkill.name);
     // Always append session_id (even if null) to maintain consistency with sendTextStream
     if (sessionId) formData.append('session_id', sessionId);
     pendingFiles.forEach(f => formData.append('files', f));
@@ -345,6 +458,7 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
     let evalThought = '';
     let agentResults = {};
     let totalIterations = 0;
+    let plannerCount = 0;
     let currentState = null; // For paused context
     let accumulatedContent = ''; // 累积所有已显示过的内容
     let streamingTokens = false; // 是否正在通过 token 流式输出
@@ -1007,14 +1121,12 @@ function startNewChat() {
     sessionId = null;
     localStorage.removeItem('intentRecognitionSessionId');
     chatArea.innerHTML = '';
-    if (welcomeContainer) {
-        welcomeContainer.style.display = 'flex';
-        if (!chatArea.contains(welcomeContainer)) {
-            chatArea.appendChild(welcomeContainer);
-        }
-    }
+    renderWelcomeHome();
+    setWelcomeVisible(true);
     pendingFiles = [];
     filePreview.innerHTML = '';
+    selectedSkill = null;
+    renderSelectedSkillTag();
     chatInput.value = '';
     chatInput.focus();
     

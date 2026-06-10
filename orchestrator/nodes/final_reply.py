@@ -95,6 +95,15 @@ async def final_reply_node(state: OrchestratorState) -> dict:
         }
 
     results = state.get("results", {})
+    file_ctx = state.get("file_ctx") or {}
+    file_summary = []
+    for category, label in (("images", "图片"), ("documents", "文档")):
+        for f in file_ctx.get(category, []) or []:
+            if isinstance(f, dict):
+                file_summary.append(
+                    f"- {f.get('file_name', 'unknown')} ({label}) path={f.get('file_path', '')}"
+                )
+    file_context_text = "\n".join(file_summary) if file_summary else "无文件"
 
     # ─── 组装 Agent 研报 ───
     if results:
@@ -123,6 +132,18 @@ async def final_reply_node(state: OrchestratorState) -> dict:
         for aid, aname in agent_names.items()
     ]) if agent_names else "   - 无特定来源指引"
 
+    skill_context = state.get("skill_context") or {}
+    if skill_context:
+        skill_ctx = (
+            "\n=== 用户选中的 Skill 指令（系统约束）===\n"
+            f"Skill: {skill_context.get('name', '')}\n"
+            f"Description: {skill_context.get('description', '')}\n"
+            f"{skill_context.get('instruction', '')}\n"
+            "=== Skill 指令结束 ===\n"
+        )
+    else:
+        skill_ctx = ""
+
     system_msg = SystemMessage(
         content=(
             "你是一个综合汇总与最终回答 Agent（Synthesizer & Final Responder）。\n"
@@ -134,6 +155,8 @@ async def final_reply_node(state: OrchestratorState) -> dict:
             "请优先回答对应 Agent 的结果。\n"
             "3. **直接对话**: 如果『内部专家累积研报详情』为空，直接利用对话历史进行友好回复。\n"
             "4. **专业性**: 整合多轮迭代的情报，不要暴露内部任务调度的技术细节。\n\n"
+            f"{skill_ctx}"
+            f"=== 当前用户上传文件 ===\n{file_context_text}\n====================\n"
             f"=== 内部专家累积研报详情 ===\n{reports}\n==============================\n"
             f"\n=== Conversation Router ===\n{route}\n===========================\n"
         )

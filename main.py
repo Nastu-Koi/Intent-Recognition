@@ -14,12 +14,14 @@ import os
 import uuid
 import shutil
 import asyncio
+import json
+import subprocess
 from pathlib import Path
 from typing import Any, Optional, List, Dict
 
 import uvicorn
 from fastapi import FastAPI, UploadFile, File, Form, Request
-from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import JSONResponse, HTMLResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
@@ -169,6 +171,124 @@ def _card_to_prompt_dict(card) -> dict:
     }
 
 
+def _normalize_skill_item(item: Any) -> Optional[dict]:
+    """Normalize eyc-skills output into the fields used by the UI."""
+    if isinstance(item, str):
+        name = item.strip()
+        return {"name": name, "description": "", "path": ""} if name else None
+    if not isinstance(item, dict):
+        return None
+
+    name = (
+        item.get("name")
+        or item.get("id")
+        or item.get("slug")
+        or item.get("skill")
+        or item.get("path")
+    )
+    if not name:
+        return None
+
+    description = item.get("description") or item.get("summary") or item.get("desc") or ""
+    return {
+        "name": str(name),
+        "description": str(description) if description is not None else "",
+        "path": str(item.get("path") or ""),
+    }
+
+
+def _read_skill_description(skill_path: str) -> str:
+    """Read description from a skill's SKILL.md front matter when CLI omits it."""
+    if not skill_path:
+        return ""
+
+    skill_md = Path(skill_path) / "SKILL.md"
+    if not skill_md.exists():
+        return ""
+
+    try:
+        lines = skill_md.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+
+    if lines and lines[0].strip() == "---":
+        for line in lines[1:]:
+            stripped = line.strip()
+            if stripped == "---":
+                break
+            if stripped.startswith("description:"):
+                return stripped.split(":", 1)[1].strip().strip('"').strip("'")
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and stripped != "---":
+            return stripped[:240]
+    return ""
+
+
+def _load_skill_context(skill_name: Optional[str]) -> Optional[dict]:
+    """Load the selected skill's full SKILL.md for system prompt injection."""
+    if not skill_name:
+        return None
+
+    normalized = skill_name.strip()
+    if not normalized or normalized != Path(normalized).name:
+        return None
+
+    skill_dir = PROJECT_ROOT / "skills" / ".eyc" / "skills" / normalized
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.exists():
+        logger.warning("[Skills] Selected skill not found: %s", normalized)
+        return None
+
+    try:
+        instruction = skill_md.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("[Skills] Failed to read %s: %s", skill_md, exc)
+        return None
+
+    return {
+        "name": normalized,
+        "path": str(skill_dir),
+        "description": _read_skill_description(str(skill_dir)),
+        "instruction": instruction,
+    }
+
+
+def _extract_skills_from_payload(payload: Any) -> list[dict]:
+    """Handle common JSON shapes returned by skill CLIs."""
+    if isinstance(payload, list):
+        candidates = payload
+    elif isinstance(payload, dict):
+        candidates = (
+            payload.get("skills")
+            or payload.get("items")
+            or payload.get("data")
+            or payload.get("results")
+            or []
+        )
+    else:
+        candidates = []
+
+    if isinstance(candidates, dict):
+        candidates = candidates.values()
+
+    skills = []
+    seen = set()
+    for item in candidates:
+        skill = _normalize_skill_item(item)
+        if not skill:
+            continue
+        if not skill.get("description"):
+            skill["description"] = _read_skill_description(skill.get("path", ""))
+        key = skill["name"]
+        if key in seen:
+            continue
+        seen.add(key)
+        skills.append(skill)
+    return skills
+
+
 # ─── LangGraph 图 (延迟初始化) ───
 _GRAPH = None
 
@@ -297,6 +417,7 @@ class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, description="用户输入文本")
     role: Optional[str] = Field(default=None, description="用户角色 (RBAC)")
     session_id: Optional[str] = Field(default=None, description="会话 ID (多轮对话)")
+    selected_skill: Optional[str] = Field(default=None, description="前端选中的 skill 名称")
 
 
 class ChatResponse(BaseModel):
@@ -358,6 +479,66 @@ def list_roles():
     }
 
 
+@app.get("/skills")
+def list_installed_skills():
+    """List installed EYC skills for the frontend selector."""
+    env = os.environ.copy()
+    node22_bin = Path("/opt/homebrew/opt/node@22/bin")
+    if node22_bin.exists():
+        env["PATH"] = f"{node22_bin}{os.pathsep}{env.get('PATH', '')}"
+    skills_cwd = PROJECT_ROOT / "skills"
+    command_cwd = skills_cwd if (skills_cwd / ".eyc" / "skills").exists() else PROJECT_ROOT
+
+    try:
+        result = subprocess.run(
+            ["eyc-skills", "list", "-a", "eyc", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            env=env,
+            cwd=command_cwd,
+        )
+    except FileNotFoundError:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "skills": [],
+                "error": "eyc-skills command not found",
+            },
+        )
+    except subprocess.TimeoutExpired:
+        return JSONResponse(
+            status_code=504,
+            content={
+                "skills": [],
+                "error": "eyc-skills list timed out",
+            },
+        )
+
+    if result.returncode != 0:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "skills": [],
+                "error": (result.stderr or result.stdout or "eyc-skills list failed").strip(),
+            },
+        )
+
+    try:
+        payload = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "skills": [],
+                "error": f"Invalid eyc-skills JSON output: {exc}",
+            },
+        )
+
+    return {"skills": _extract_skills_from_payload(payload)}
+
+
 @app.post("/refresh-agents")
 def refresh_agents():
     """手动刷新 Agent Card 发现缓存。"""
@@ -397,6 +578,16 @@ async def upload_file(file: UploadFile = File(...)):
         "file_type": file_type,
         "save_path": str(save_path),
     }
+
+
+@app.get("/uploads/{filename}")
+async def download_upload(filename: str):
+    """Download files generated or uploaded under uploads/."""
+    safe_name = Path(filename).name
+    file_path = UPLOAD_DIR / safe_name
+    if not file_path.exists() or not file_path.is_file():
+        return JSONResponse(status_code=404, content={"error": "file not found"})
+    return FileResponse(path=str(file_path), filename=safe_name)
 
 
 # ─── 会话历史 API ───
@@ -572,6 +763,7 @@ async def chat(request: ChatRequest):
     if _STORE:
         conversation_id = await _STORE.get_conversation_id(session_id) or ""
     conversation_id = conversation_id or _extract_dify_conversation_id(checkpoint_state)
+    skill_context = _load_skill_context(request.selected_skill)
     
     initial_state = {
         "messages": [HumanMessage(content=request.query)],
@@ -579,6 +771,7 @@ async def chat(request: ChatRequest):
         "file_ctx": file_ctx,
         "role": request.role or "",
         "available_agents": available_agents,
+        "skill_context": skill_context,
         "plan": checkpoint_state.get("plan", {}),
         "results": checkpoint_state.get("results", {}),
         "_agent_outputs": checkpoint_state.get("_agent_outputs", {}),
@@ -647,6 +840,7 @@ async def chat_with_files(
     query: str = Form(...),
     role: Optional[str] = Form(None),
     session_id: Optional[str] = Form(None),
+    selected_skill: Optional[str] = Form(None),
     files: List[UploadFile] = File(default=[]),
 ):
     """
@@ -715,12 +909,14 @@ async def chat_with_files(
     if _STORE:
         conversation_id = await _STORE.get_conversation_id(sid) or ""
     conversation_id = conversation_id or _extract_dify_conversation_id(checkpoint_state)
+    skill_context = _load_skill_context(selected_skill)
     initial_state = {
         "messages": [HumanMessage(content=query)],
         "query": query,
         "file_ctx": file_ctx,
         "role": role or "",
         "available_agents": available_agents,
+        "skill_context": skill_context,
         "plan": checkpoint_state.get("plan", {}),
         "results": checkpoint_state.get("results", {}),
         "_agent_outputs": checkpoint_state.get("_agent_outputs", {}),
@@ -842,6 +1038,7 @@ async def chat_stream(request: ChatRequest):
     if _STORE:
         conversation_id = await _STORE.get_conversation_id(session_id) or ""
     conversation_id = conversation_id or _extract_dify_conversation_id(checkpoint_state)
+    skill_context = _load_skill_context(request.selected_skill)
     logger.info(
         f"[ChatStream] Conversation mapping: session_id={session_id} | "
         f"conversation_id={conversation_id or '<new>'} | "
@@ -855,6 +1052,7 @@ async def chat_stream(request: ChatRequest):
         "file_ctx": file_ctx,
         "role": request.role or "",
         "available_agents": available_agents,
+        "skill_context": skill_context,
         "plan": checkpoint_state.get("plan", {}),
         "results": checkpoint_state.get("results", {}),
         "_agent_outputs": checkpoint_state.get("_agent_outputs", {}),
@@ -919,6 +1117,7 @@ async def chat_with_files_stream(
     query: str = Form(...),
     role: Optional[str] = Form(None),
     session_id: Optional[str] = Form(None),
+    selected_skill: Optional[str] = Form(None),
     files: List[UploadFile] = File(default=[]),
 ):
     """
@@ -983,7 +1182,9 @@ async def chat_with_files_stream(
 
     logger.info(
         f"[ChatWithFilesStream] session={sid} | role={role} | "
-        f"client_session={session_id or '<new>'} | query={query[:100]}..."
+        f"client_session={session_id or '<new>'} | "
+        f"selected_skill={selected_skill or '<none>'} | "
+        f"files={len(files or [])} | file_ctx={file_ctx} | query={query[:100]}..."
     )
 
     # 构建初始 State - 从 checkpoint 恢复完整状态
@@ -992,6 +1193,7 @@ async def chat_with_files_stream(
     if _STORE:
         conversation_id = await _STORE.get_conversation_id(sid) or ""
     conversation_id = conversation_id or _extract_dify_conversation_id(checkpoint_state)
+    skill_context = _load_skill_context(selected_skill)
     logger.info(
         f"[ChatWithFilesStream] Conversation mapping: session_id={sid} | "
         f"conversation_id={conversation_id or '<new>'} | "
@@ -1004,6 +1206,7 @@ async def chat_with_files_stream(
         "file_ctx": file_ctx,
         "role": role or "",
         "available_agents": available_agents,
+        "skill_context": skill_context,
         "plan": checkpoint_state.get("plan", {}),
         "results": checkpoint_state.get("results", {}),
         "_agent_outputs": checkpoint_state.get("_agent_outputs", {}),

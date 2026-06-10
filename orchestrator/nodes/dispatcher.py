@@ -27,6 +27,7 @@ async def _a2a_send_message(
     file_ctx: Dict[str, Any] | None = None,
     prior_results: Dict[str, Any] | None = None,
     prior_structured: Dict[str, Any] | None = None,
+    skill_context: Dict[str, Any] | None = None,
     conversation_id: str = "",
     timeout: int = 60,
 ) -> tuple[str, str, Dict[str, Any]]:
@@ -70,6 +71,7 @@ async def _a2a_send_message(
                 "file_ctx": file_ctx,
                 "prior_results": prior_results,
                 "prior_structured": prior_structured,
+                "skill_context": skill_context,
                 "conversation_id": conversation_id,
             },
         },
@@ -171,6 +173,7 @@ async def dispatcher_node(state: OrchestratorState) -> dict:
     current_results = state.get("results") or {}
     current_structured = state.get("_agent_outputs") or {}
     conversation_id = state.get("conversation_id", "")
+    skill_context = state.get("skill_context")
 
     tasks = plan_data.get("tasks", [])
     if not tasks:
@@ -227,6 +230,7 @@ async def dispatcher_node(state: OrchestratorState) -> dict:
             file_ctx=file_ctx,
             prior_results=results,  # 当前累积的文本结果
             prior_structured=agent_outputs,  # 当前累积的结构化输出
+            skill_context=skill_context,
             conversation_id=conversation_id,
         )
 

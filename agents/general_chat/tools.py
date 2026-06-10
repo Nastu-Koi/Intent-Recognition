@@ -10,6 +10,8 @@ General Chat 工具集 — 图像识别与文档总结。
 """
 
 import os
+import time
+from io import BytesIO
 from pathlib import Path
 from typing import List
 
@@ -365,5 +367,97 @@ def document_summary(file_path: str, instruction: str = "请总结这份文档�
         return f"文档总结失败: {e}"
 
 
+@tool
+def pdf_add_watermark(
+    file_path: str,
+    watermark_text: str = "WATERMARK",
+    opacity: float = 0.18,
+    font_size: int = 48,
+    rotation: int = 45,
+) -> str:
+    """给 PDF 的每一页添加文本水印，并生成新的 PDF 文件。
+
+    Args:
+        file_path: PDF 文件的本地路径（必须是服务器上的绝对路径）
+        watermark_text: 要添加的水印文字，例如「CONFIDENTIAL」或「仅供内部使用」
+        opacity: 水印透明度，0 到 1 之间，默认 0.18
+        font_size: 水印字号，默认 48
+        rotation: 水印旋转角度，默认 45
+    """
+    logger.info(
+        "[Tool:pdf_add_watermark] file=%s | text=%s | opacity=%s | font_size=%s | rotation=%s",
+        file_path,
+        watermark_text,
+        opacity,
+        font_size,
+        rotation,
+    )
+
+    path = Path(file_path)
+    if not path.exists():
+        return f"错误: 文件不存在: {file_path}"
+    if path.suffix.lower() != ".pdf":
+        return f"错误: 文件 {path.name} 不是 PDF 文件，无法添加 PDF 水印。"
+
+    try:
+        from pypdf import PdfReader, PdfWriter
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.colors import Color
+    except ImportError as e:
+        return (
+            "PDF 加水印工具缺少依赖，请先安装 pypdf 和 reportlab："
+            "pip install pypdf reportlab。"
+            f"具体错误: {e}"
+        )
+
+    try:
+        safe_opacity = max(0.0, min(float(opacity), 1.0))
+        safe_font_size = max(8, min(int(font_size), 240))
+        safe_rotation = int(rotation)
+        text = str(watermark_text or "WATERMARK")
+
+        reader = PdfReader(str(path))
+        writer = PdfWriter()
+
+        for page in reader.pages:
+            width = float(page.mediabox.width)
+            height = float(page.mediabox.height)
+
+            packet = BytesIO()
+            overlay = canvas.Canvas(packet, pagesize=(width, height))
+            overlay.saveState()
+            if hasattr(overlay, "setFillAlpha"):
+                overlay.setFillAlpha(safe_opacity)
+            overlay.setFillColor(Color(0.45, 0.45, 0.45, alpha=safe_opacity))
+            overlay.setFont("Helvetica-Bold", safe_font_size)
+            overlay.translate(width / 2, height / 2)
+            overlay.rotate(safe_rotation)
+            overlay.drawCentredString(0, 0, text)
+            overlay.restoreState()
+            overlay.save()
+
+            packet.seek(0)
+            watermark_page = PdfReader(packet).pages[0]
+            page.merge_page(watermark_page)
+            writer.add_page(page)
+
+        if reader.metadata:
+            writer.add_metadata(dict(reader.metadata))
+
+        output_name = f"{path.stem}_watermarked_{int(time.time())}.pdf"
+        output_path = path.with_name(output_name)
+        with open(output_path, "wb") as output:
+            writer.write(output)
+
+        return (
+            f"已成功添加水印「{text}」。\n"
+            f"输出文件: {output_path}\n"
+            f"下载链接: /uploads/{output_name}"
+        )
+    except Exception as e:
+        logger.error(f"[Tool:pdf_add_watermark] 执行失败: {e}", exc_info=True)
+        return f"PDF 加水印失败: {e}"
+
+
 # 导出工具列表
-GENERAL_CHAT_TOOLS = [image_recognition, document_summary]
+GENERAL_CHAT_TOOLS = [image_recognition, document_summary, pdf_add_watermark]

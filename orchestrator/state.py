@@ -126,6 +126,7 @@ class OrchestratorState(MessagesState):
     - file_ctx: 文件上下文 {images: [...], documents: [...]}
     - role: 用户角色 (RBAC)
     - available_agents: 经 RBAC 过滤后的可用 Agent 描述列表
+    - skill_context: 前端选中的 skill 指令上下文
 
     动态数据 (每轮覆盖/累加):
     - plan: Planner 生成的任务计划 (Dict)
@@ -142,6 +143,7 @@ class OrchestratorState(MessagesState):
     file_ctx: Annotated[Optional[Dict[str, Any]], _merge_file_ctx]  # 文件上下文 (合并 reducer，多轮不丢失)
     role: str                                                   # 用户角色
     available_agents: List[Dict[str, Any]]                      # 可用 Agent 描述列表
+    skill_context: Optional[Dict[str, Any]]                      # 选中的 skill 指令上下文
     conversation_id: str                                        # Dify 多轮对话 ID
 
     # 动态数据

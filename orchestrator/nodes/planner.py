@@ -116,6 +116,7 @@ async def planner_node(state: OrchestratorState) -> dict:
     
     agent_catalog = _build_agent_catalog(available_agents)
     valid_agent_ids = [a["agent_id"] for a in available_agents]
+    has_general_chat = "general_chat" in valid_agent_ids
 
     # ─── 构建文件上下文描述 ───
     file_ctx = state.get("file_ctx") or {}
@@ -172,6 +173,20 @@ async def planner_node(state: OrchestratorState) -> dict:
     else:
         results_ctx = ""
 
+    skill_context = state.get("skill_context") or {}
+    if skill_context:
+        skill_ctx = (
+            "\n### 用户选中的 Skill 指令（必须遵守）\n"
+            f"Skill: {skill_context.get('name', '')}\n"
+            f"Description: {skill_context.get('description', '')}\n"
+            "以下是该 skill 的完整 SKILL.md 指令。规划任务时必须将这些规则作为高优先级系统约束，"
+            "并在生成给 Agent 的 instruction 时保留相关执行要求：\n"
+            f"{skill_context.get('instruction', '')}\n"
+            "### Skill 指令结束\n"
+        )
+    else:
+        skill_ctx = ""
+
     system_msg = SystemMessage(
         content=(
             "你是一个高度智能的多智能体系统规划专家（Strategic Planner）。\n"
@@ -190,8 +205,12 @@ async def planner_node(state: OrchestratorState) -> dict:
             "这属于执行方式约束，优先级高于普通关键词匹配。只要被指定的 Agent 是合法 target，"
             "就必须为该 Agent 生成任务；如果你认为该 Agent 可能不擅长，也应让该 Agent 基于其能力边界作答，"
             "不要因为关键词不匹配而返回空 tasks。\n\n"
+            f"9. **Skill + 文件处理**: 如果用户选择了 Skill 且当前可用文件不是“无文件”，"
+            f"{'必须调度 `general_chat`，并在 instruction 中明确引用当前可用文件名与 skill 要求。' if has_general_chat else '必须调度一个具备文件处理能力的合法 Agent，不能直接返回空 tasks。'}"
+            "不要声称用户没有提供文件。\n\n"
 
             f"【当前可用文件】: {file_str}\n"
+            f"{skill_ctx}"
             f"{iteration_ctx}"
             f"{results_ctx}"
 

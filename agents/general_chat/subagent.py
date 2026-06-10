@@ -87,9 +87,10 @@ class GeneralChatAgent(SubAgent):
 
         # 构建文件上下文描述（注入到 system prompt）
         file_context_str = self._build_file_context_str(file_paths)
+        skill_context = context.get("skill_context") or {}
 
         # 构建 system message
-        system_msg = SystemMessage(content=self._build_system_prompt(file_context_str))
+        system_msg = SystemMessage(content=self._build_system_prompt(file_context_str, skill_context))
 
         # 初始化 LLM 并绑定工具
         llm = _get_chat_llm()
@@ -289,17 +290,33 @@ class GeneralChatAgent(SubAgent):
 
         return "\n".join(lines)
 
-    def _build_system_prompt(self, file_context_str: str) -> str:
+    def _build_system_prompt(self, file_context_str: str, skill_context: Dict[str, Any] | None = None) -> str:
         """构建 General Chat 的 system prompt。"""
+        skill_context = skill_context or {}
+        if skill_context:
+            skill_prompt = (
+                "\n### 用户选中的 Skill 指令（必须遵守）\n"
+                f"Skill: {skill_context.get('name', '')}\n"
+                f"Description: {skill_context.get('description', '')}\n"
+                "以下是该 skill 的完整 SKILL.md 指令：\n"
+                f"{skill_context.get('instruction', '')}\n"
+                "### Skill 指令结束\n\n"
+            )
+        else:
+            skill_prompt = ""
+
         return (
             "你是一个智能通用对话助手。你可以:\n"
             "1. 回答各种通用问题和进行日常对话\n"
             "2. 使用 `image_recognition` 工具识别和分析图片（支持 OCR、发票识别、场景分析）\n"
             "3. 使用 `document_summary` 工具总结和分析文档\n\n"
+            "4. 使用 `pdf_add_watermark` 工具给 PDF 添加文本水印并生成新文件\n\n"
+            f"{skill_prompt}"
 
             "### 工具使用规则:\n"
             "- 当用户提供了图片文件且需要识别/分析时，调用 `image_recognition` 工具\n"
             "- 当用户提供了文档文件且需要总结/分析时，调用 `document_summary` 工具\n"
+            "- 当用户要求给 PDF 添加水印时，必须调用 `pdf_add_watermark` 工具，不要只提供操作建议\n"
             "- 工具的 `file_path` 参数必须使用下面「可用文件」中列出的完整路径\n"
             "- 如果是普通聊天或无需文件处理的问题，直接回复即可，不需要调用任何工具\n\n"
 

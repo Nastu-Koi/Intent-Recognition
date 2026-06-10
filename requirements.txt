@@ -24,6 +24,10 @@ python-multipart>=0.0.6          # FastAPI 文件上传支持
 requests>=2.31.0                 # Dify API 调用 (同步)
 aiohttp>=3.9.0                   # A2A JSON-RPC 调用 (异步)
 
+# ─── 文件处理工具 ───
+pypdf>=4.0.0                     # PDF 读写、合并、水印等
+reportlab>=4.0.0                 # 创建 PDF 页面与水印 overlay
+
 # ─── 数据 & 配置 ───
 pydantic>=2.0.0
 pyyaml>=6.0                     # YAML 配置解析
