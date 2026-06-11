@@ -479,16 +479,6 @@ async def planner_node(state: OrchestratorState) -> dict:
         # 第 3 步：保留空任务作为“直接回复”信号。
         # Planner 提示词已经要求图片/文档/通用问答在需要时显式调度 general_chat。
         # 因此这里不能再无条件补一个 general_chat，否则普通追问或路由异常会被误触发工具调用。
-        if not valid_tasks and current_file_ctx and has_general_chat and not plan_data["human_gate"].get("needs_human_input"):
-            valid_tasks.append({
-                "target": "general_chat",
-                "instruction": (
-                    f"用户请求：{effective_query}\n"
-                    f"当前可用文件：{file_str}\n"
-                    "请根据文件类型选择合适工具处理：文档使用 document_summary，图片使用 image_recognition。"
-                ),
-            })
-            logger.warning("[Planner] 当前轮有新上传文件但未生成任务，已兜底调度 general_chat")
         if not valid_tasks:
             if relation == "related" and route.get("related_type") == "correction":
                 logger.warning(
