@@ -483,6 +483,60 @@ def _human_gate_answer(human_gate: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _chat_response_from_result(result: Dict[str, Any], session_id: str) -> dict:
+    return {
+        "answer": result.get("final_text", "未能生成回复"),
+        "session_id": session_id,
+        "iterations": result.get("iter", 0),
+        "plan_rationale": (result.get("plan") or {}).get("rationale", ""),
+        "human_gate": (result.get("plan") or {}).get("human_gate", {}),
+        "eval_action": result.get("eval_action", ""),
+        "eval_thought": result.get("eval_thought", ""),
+        "agent_results": {
+            k: str(v)
+            for k, v in (result.get("results") or {}).items()
+            if not k.startswith("_")
+        },
+        "thinking_chain": result.get("thinking_chain", []),
+    }
+
+
+async def _persist_conversation_metadata(
+    *,
+    session_id: str,
+    title: str,
+    role: str,
+    result: Dict[str, Any],
+) -> None:
+    if not _STORE:
+        return
+    dify_conversation_id = _extract_dify_conversation_id(result)
+    if dify_conversation_id:
+        await _STORE.set_conversation_id(session_id, dify_conversation_id)
+    messages = result.get("messages", [])
+    final_text = result.get("final_text", "")
+    asyncio.create_task(_STORE.upsert_conversation(
+        session_id=session_id,
+        title=title[:40] if len(title) > 40 else title,
+        role=role or "default",
+        message_count=len(messages),
+        last_reply=final_text[:200] if final_text else "",
+    ))
+
+
+async def _checkpoint_role(session_id: str) -> str:
+    try:
+        checkpoint_tuple = await _CHECKPOINTER.aget_tuple(
+            {"configurable": {"thread_id": session_id}}
+        ) if _CHECKPOINTER else None
+        if checkpoint_tuple:
+            channel_values = checkpoint_tuple.checkpoint.get("channel_values", {})
+            return channel_values.get("role", "") or ""
+    except Exception as e:
+        logger.warning("[Resume] Failed to restore role from checkpoint: %s", e)
+    return ""
+
+
 # ──────────────────────────────────────────────
 # Request / Response Models
 # ──────────────────────────────────────────────
@@ -510,6 +564,12 @@ class HumanGateResumeRequest(BaseModel):
     session_id: str = Field(..., min_length=1, description="需要 resume 的会话 ID")
     action: str = Field(..., description="用户动作: approve / deny / supplement")
     message: str = Field(default="", description="用户确认文本或补充信息")
+
+
+class FinalEvalRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, description="会话 ID")
+    action: str = Field(..., description="最终答案评价动作: accepted / revise / replan")
+    message: str = Field(default="", description="修改意见或重新规划原因")
 
 
 # ──────────────────────────────────────────────
@@ -707,7 +767,10 @@ async def get_conversation_history(session_id: str):
     formatted = []
     for msg in messages:
         content = msg.content if hasattr(msg, "content") else str(msg)
-        if isinstance(msg, HumanMessage) and "【Conversation Router】" in str(content):
+        if isinstance(msg, HumanMessage) and (
+            "【Conversation Router】" in str(content)
+            or "【Human Gate】" in str(content)
+        ):
             continue
         role = "user" if isinstance(msg, HumanMessage) else "agent"
         formatted.append({"role": role, "content": content})
@@ -861,7 +924,7 @@ async def chat(request: ChatRequest):
         "thinking_chain": checkpoint_state.get("thinking_chain", []),
         "conversation_route": checkpoint_state.get("conversation_route", {}),
         "conversation_id": conversation_id,
-        "human_gate_response": checkpoint_state.get("human_gate_response", {}),
+        "human_gate_response": {},
     }
 
     # ─── Step 4: 执行 LangGraph 图 ───
@@ -887,39 +950,14 @@ async def chat(request: ChatRequest):
                 thinking_chain=result.get("thinking_chain", []),
             )
         
-        # 更新会话元数据 (异步不阻塞回复)
-        if _STORE:
-            dify_conversation_id = _extract_dify_conversation_id(result)
-            if dify_conversation_id:
-                await _STORE.set_conversation_id(session_id, dify_conversation_id)
-            # 摘要取用户输入前 40 字
-            title = request.query[:40] if len(request.query) > 40 else request.query
-            messages = result.get("messages", [])
-            final_text = result.get("final_text", "")
-            last_reply = final_text[:200] if final_text else ""
-            asyncio.create_task(_STORE.upsert_conversation(
-                session_id=session_id,
-                title=title,
-                role=request.role or "default",
-                message_count=len(messages),
-                last_reply=last_reply
-            ))
-
-        return ChatResponse(
-            answer=result.get("final_text", "未能生成回复"),
+        await _persist_conversation_metadata(
             session_id=session_id,
-            iterations=result.get("iter", 0),
-            plan_rationale=(result.get("plan") or {}).get("rationale", ""),
-            human_gate=(result.get("plan") or {}).get("human_gate", {}),
-            eval_action=result.get("eval_action", ""),
-            eval_thought=result.get("eval_thought", ""),
-            agent_results={
-                k: str(v)
-                for k, v in (result.get("results") or {}).items()
-                if not k.startswith("_")
-            },
-            thinking_chain=result.get("thinking_chain", []),
+            title=request.query,
+            role=request.role or "default",
+            result=result,
         )
+
+        return ChatResponse(**_chat_response_from_result(result, session_id))
     except Exception as e:
         logger.error(f"[Chat] Error: {e}", exc_info=True)
         return JSONResponse(
@@ -1005,7 +1043,7 @@ async def chat_with_files(
         "thinking_chain": checkpoint_state.get("thinking_chain", []),
         "conversation_route": checkpoint_state.get("conversation_route", {}),
         "conversation_id": conversation_id,
-        "human_gate_response": checkpoint_state.get("human_gate_response", {}),
+        "human_gate_response": {},
     }
 
     # 执行 LangGraph 图
@@ -1031,38 +1069,14 @@ async def chat_with_files(
                 "thinking_chain": result.get("thinking_chain", []),
             }
 
-        # 更新会话元数据
-        if _STORE:
-            dify_conversation_id = _extract_dify_conversation_id(result)
-            if dify_conversation_id:
-                await _STORE.set_conversation_id(sid, dify_conversation_id)
-            title = query[:40] if len(query) > 40 else query
-            messages = result.get("messages", [])
-            final_text = result.get("final_text", "")
-            last_reply = final_text[:200] if final_text else ""
-            asyncio.create_task(_STORE.upsert_conversation(
-                session_id=sid,
-                title=title,
-                role=role or "default",
-                message_count=len(messages),
-                last_reply=last_reply
-            ))
+        await _persist_conversation_metadata(
+            session_id=sid,
+            title=query,
+            role=role or "default",
+            result=result,
+        )
 
-        return {
-            "answer": result.get("final_text", "未能生成回复"),
-            "session_id": sid,
-            "iterations": result.get("iter", 0),
-            "plan_rationale": (result.get("plan") or {}).get("rationale", ""),
-            "human_gate": (result.get("plan") or {}).get("human_gate", {}),
-            "eval_action": result.get("eval_action", ""),
-            "eval_thought": result.get("eval_thought", ""),
-            "agent_results": {
-                k: str(v)
-                for k, v in (result.get("results") or {}).items()
-                if not k.startswith("_")
-            },
-            "thinking_chain": result.get("thinking_chain", []),
-        }
+        return _chat_response_from_result(result, sid)
     except Exception as e:
         logger.error(f"[ChatWithFiles] Error: {e}", exc_info=True)
         return JSONResponse(
@@ -1156,7 +1170,7 @@ async def chat_stream(request: ChatRequest):
         "thinking_chain": checkpoint_state.get("thinking_chain", []),
         "conversation_route": checkpoint_state.get("conversation_route", {}),
         "conversation_id": conversation_id,
-        "human_gate_response": checkpoint_state.get("human_gate_response", {}),
+        "human_gate_response": {},
     }
 
     # ─── Step 4: 使用 astream 流式执行 ───
@@ -1205,6 +1219,83 @@ async def chat_stream(request: ChatRequest):
     )
 
 
+@app.post("/chat-resume", response_model=ChatResponse)
+async def chat_resume(request: HumanGateResumeRequest):
+    """Resume a paused LangGraph human gate and return a blocking response."""
+    session_id = request.session_id
+    checkpoint_state = await _get_checkpoint_state(session_id)
+    if not checkpoint_state:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"No paused conversation found for session_id={session_id}"},
+        )
+
+    role = await _checkpoint_role(session_id)
+    graph = _get_graph()
+    config = {
+        "configurable": {"thread_id": session_id},
+        "recursion_limit": 25,
+    }
+    command = Command(
+        resume={
+            "action": request.action,
+            "message": request.message,
+        }
+    )
+
+    try:
+        result = await graph.ainvoke(command, config=config)
+        interrupted_gate = _interrupt_human_gate(result)
+        if interrupted_gate:
+            return ChatResponse(
+                answer=_human_gate_answer(interrupted_gate),
+                session_id=session_id,
+                iterations=result.get("iter", 0),
+                plan_rationale=(result.get("plan") or {}).get("rationale", ""),
+                human_gate=interrupted_gate,
+                eval_action="NEEDS_HUMAN_INPUT",
+                eval_thought=interrupted_gate.get("reason", ""),
+                agent_results={},
+                thinking_chain=result.get("thinking_chain", []),
+            )
+
+        await _persist_conversation_metadata(
+            session_id=session_id,
+            title=request.message or checkpoint_state.get("query", "继续会话"),
+            role=role or "default",
+            result=result,
+        )
+        return ChatResponse(**_chat_response_from_result(result, session_id))
+    except Exception as e:
+        logger.error(f"[ChatResumeBlocking] Error: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "session_id": session_id},
+        )
+
+
+@app.post("/chat-final-eval")
+async def chat_final_eval(request: FinalEvalRequest):
+    """Record or convert final-answer human evaluation into a follow-up instruction."""
+    action = request.action.strip().lower()
+    if action not in {"accepted", "revise", "replan"}:
+        return JSONResponse(status_code=400, content={"error": "invalid final evaluation action"})
+    if action == "accepted":
+        logger.info("[FinalEval] accepted session=%s", request.session_id)
+        return {"status": "accepted", "session_id": request.session_id}
+
+    feedback = request.message.strip()
+    if not feedback:
+        return JSONResponse(status_code=400, content={"error": "message is required"})
+    prefix = "请根据这条人工评价修改上一条最终回答，不需要重新调用工具或 Agent：" if action == "revise" else "请根据这条人工评价重新规划并必要时重新调用 Agent："
+    return {
+        "status": "follow_up_required",
+        "session_id": request.session_id,
+        "query": f"{prefix}{feedback}",
+        "mode": action,
+    }
+
+
 @app.post("/chat-resume-stream")
 async def chat_resume_stream(request: HumanGateResumeRequest):
     """Resume a paused LangGraph human gate and continue streaming the same run."""
@@ -1217,17 +1308,7 @@ async def chat_resume_stream(request: HumanGateResumeRequest):
         )
 
     all_cards = _get_agent_cards()
-    role = ""
-    try:
-        checkpoint_tuple = await _CHECKPOINTER.aget_tuple(
-            {"configurable": {"thread_id": session_id}}
-        ) if _CHECKPOINTER else None
-        if checkpoint_tuple:
-            channel_values = checkpoint_tuple.checkpoint.get("channel_values", {})
-            role = channel_values.get("role", "") or ""
-    except Exception as e:
-        logger.warning("[ChatResume] Failed to restore role from checkpoint: %s", e)
-
+    role = await _checkpoint_role(session_id)
     filtered_cards = RBAC.filter_cards(all_cards, role or None)
     available_agents = [_card_to_prompt_dict(c) for c in filtered_cards]
     source_state = {"available_agents": available_agents}
@@ -1365,7 +1446,7 @@ async def chat_with_files_stream(
         "thinking_chain": checkpoint_state.get("thinking_chain", []),
         "conversation_route": checkpoint_state.get("conversation_route", {}),
         "conversation_id": conversation_id,
-        "human_gate_response": checkpoint_state.get("human_gate_response", {}),
+        "human_gate_response": {},
     }
 
     # 使用 astream 流式执行

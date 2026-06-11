@@ -1050,6 +1050,87 @@ body {
     font-size: 12px;
 }
 
+.final-eval-panel {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+}
+
+.final-eval-title {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-bottom: 8px;
+}
+
+.final-eval-actions,
+.final-eval-input {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.final-eval-input {
+    margin-top: 8px;
+}
+
+.final-eval-btn {
+    min-height: 30px;
+    padding: 6px 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    transition: var(--transition);
+}
+
+.final-eval-btn:hover:not(:disabled) {
+    color: var(--text-primary);
+    border-color: var(--border-active);
+    background: var(--bg-tertiary);
+}
+
+.final-eval-btn.primary {
+    color: #fff;
+    background: var(--user-bubble);
+    border: none;
+}
+
+.final-eval-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.final-eval-textarea {
+    flex: 1;
+    min-width: 220px;
+    min-height: 34px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    resize: vertical;
+    outline: none;
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.45;
+}
+
+.final-eval-textarea:focus {
+    border-color: var(--border-active);
+    box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+.final-eval-status {
+    min-height: 16px;
+    margin-top: 6px;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
 .eval-header {
     font-weight: 600;
     font-size: 14px;
@@ -1294,5 +1375,8 @@ body {
         align-items: stretch;
         flex-direction: column;
     }
-    .human-gate-btn { width: 100%; }
+    .human-gate-btn,
+    .final-eval-btn { width: 100%; }
+    .final-eval-input { flex-direction: column; }
+    .final-eval-textarea { min-width: 0; width: 100%; }
 }

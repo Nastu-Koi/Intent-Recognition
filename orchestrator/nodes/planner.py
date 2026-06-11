@@ -84,7 +84,12 @@ def _normalize_human_gate(raw_gate: dict | HumanGateDecision | None) -> dict:
             return value.strip().lower() in {"true", "1", "yes", "y", "是"}
         return bool(value)
 
+    gate_type = str(gate.get("gate_type") or "none").strip().lower()
+    if gate_type not in {"none", "clarification", "confirmation", "preference", "risk_approval"}:
+        gate_type = "none"
+
     normalized = HumanGateDecision(
+        gate_type=gate_type,
         intent_is_clear=as_bool(gate.get("intent_is_clear"), True),
         has_multiple_reasonable_interpretations=as_bool(
             gate.get("has_multiple_reasonable_interpretations"), False
@@ -108,6 +113,8 @@ def _normalize_human_gate(raw_gate: dict | HumanGateDecision | None) -> dict:
 
     if normalized["confidence"] < 0.7:
         normalized["needs_human_input"] = True
+        if normalized["gate_type"] == "none":
+            normalized["gate_type"] = "clarification"
         if not normalized["reason"]:
             normalized["reason"] = "Planner 对当前计划置信度较低。"
     if (
@@ -116,6 +123,17 @@ def _normalize_human_gate(raw_gate: dict | HumanGateDecision | None) -> dict:
         or normalized["missing_critical_parameters"]
     ):
         normalized["needs_human_input"] = True
+    if normalized["gate_type"] == "none" and normalized["needs_human_input"]:
+        if normalized["involves_high_risk_action"]:
+            normalized["gate_type"] = "risk_approval"
+        elif normalized["missing_critical_parameters"] or not normalized["intent_is_clear"]:
+            normalized["gate_type"] = "clarification"
+        elif normalized["has_multiple_reasonable_interpretations"]:
+            normalized["gate_type"] = "preference"
+        else:
+            normalized["gate_type"] = "confirmation"
+    if not normalized["needs_human_input"]:
+        normalized["gate_type"] = "none"
     if normalized["needs_human_input"] and not normalized["questions"]:
         normalized["questions"] = ["请补充你的目标、偏好或确认是否继续执行该计划。"]
 
@@ -213,7 +231,8 @@ async def planner_node(state: OrchestratorState) -> dict:
     effective_query = state.get("query", "")
 
     # ─── 构建反馈历史上下文 ───
-    has_human_gate_response = bool(state.get("human_gate_response") or {})
+    human_gate_response = state.get("human_gate_response") or {}
+    has_human_gate_response = bool(human_gate_response)
 
     if relation == "not_related" and not has_human_gate_response:
         current_iter = 0
@@ -259,14 +278,15 @@ async def planner_node(state: OrchestratorState) -> dict:
     else:
         skill_ctx = ""
 
-    human_gate_response = state.get("human_gate_response") or {}
     if human_gate_response:
         gate_response_ctx = (
             "\n### Human Gate Resume 响应（必须遵守）\n"
             f"action: {human_gate_response.get('action', '')}\n"
+            f"gate_type: {human_gate_response.get('gate_type', '')}\n"
             f"message: {human_gate_response.get('message', '')}\n"
+            f"previous_gate: {human_gate_response.get('previous_gate', {})}\n"
             "如果 action=approve，表示用户已经确认上一轮 human_gate 中提出的问题和拟定计划；"
-            "请不要因为同一个原因重复触发 human_gate，应继续生成可执行 tasks。"
+            "同一个 gate_type 与同一个问题不得再次触发 human_gate，应继续生成可执行 tasks 或直接回复。"
             "如果 action=supplement，请结合补充信息重新规划；只有仍缺少新的关键参数或出现新的风险时才再次触发 human_gate。\n"
         )
     else:
@@ -344,8 +364,9 @@ async def planner_node(state: OrchestratorState) -> dict:
             "### 输出格式:\n"
             "你必须输出 JSON，包含 rationale (规划思路)、tasks (任务列表) 和 human_gate (人工参与 gate 决策)。\n"
             "每个 task 包含 target (agent_id) 和 instruction (执行指令)。\n"
-            "human_gate 必须包含: intent_is_clear, has_multiple_reasonable_interpretations, involves_high_risk_action, "
-            "missing_critical_parameters, confidence, needs_human_input, reason, questions, proposed_plan。\n"
+            "human_gate 必须包含: gate_type, intent_is_clear, has_multiple_reasonable_interpretations, involves_high_risk_action, "
+            "missing_critical_parameters, confidence, needs_human_input, reason, questions, proposed_plan。"
+            "gate_type 只能是 none、clarification、confirmation、preference、risk_approval。\n"
             "如果是通用问题无需调度 Agent，则 tasks 为空数组。\n"
         )
     )
@@ -418,6 +439,18 @@ async def planner_node(state: OrchestratorState) -> dict:
             }
 
         plan_data["human_gate"] = _normalize_human_gate(plan_data.get("human_gate"))
+        if human_gate_response.get("action") == "approve":
+            previous_gate = human_gate_response.get("previous_gate") or {}
+            previous_gate_type = previous_gate.get("gate_type") or human_gate_response.get("gate_type")
+            current_gate_type = plan_data["human_gate"].get("gate_type")
+            if plan_data["human_gate"].get("needs_human_input") and current_gate_type == previous_gate_type:
+                logger.warning(
+                    "[Planner] Suppressed repeated approved human gate: gate_type=%s",
+                    current_gate_type,
+                )
+                plan_data["human_gate"]["needs_human_input"] = False
+                plan_data["human_gate"]["gate_type"] = "none"
+                plan_data["human_gate"]["questions"] = []
         if plan_data["human_gate"].get("needs_human_input"):
             logger.info(
                 "[Planner] Human gate triggered: reason=%s confidence=%.2f",
@@ -468,7 +501,9 @@ async def planner_node(state: OrchestratorState) -> dict:
             "plan": plan_data,
             "iter": current_iter + 1,
         }
-        if relation == "not_related" and not human_gate_response:
+        if human_gate_response:
+            update["human_gate_response"] = {}
+        if relation == "not_related":
             update.update(
                 {
                     "results": {},

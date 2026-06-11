@@ -109,6 +109,8 @@ async function sendMessage(messageOverride = null, options = {}) {
         appendMessage('user', `📎 ${fileNames}`);
     }
 
+    const requestText = options.queryOverride || text;
+
     // Create streaming response container
     const messageEl = createStreamingMessageElement();
     const thinkingChain = [];
@@ -124,9 +126,9 @@ async function sendMessage(messageOverride = null, options = {}) {
 
     try {
         if (pendingFiles.length > 0) {
-            await sendWithFilesStream(text, messageEl, thinkingChain);
+            await sendWithFilesStream(requestText, messageEl, thinkingChain);
         } else {
-            await sendTextStream(text, messageEl, thinkingChain);
+            await sendTextStream(requestText, messageEl, thinkingChain);
         }
 
         // 不需要再调用一次 adoptSessionId，因为 processStreamResponse 中已经调用过了
@@ -171,6 +173,9 @@ async function sendHumanGateResume(action, message) {
     const status = gateContext.panel.querySelector('.human-gate-status');
     if (status) {
         status.textContent = '已收到，正在基于当前计划继续处理...';
+    }
+    if (action === 'supplement' && message.trim()) {
+        appendMessage('user', message.trim());
     }
     gateContext.panel.querySelectorAll('button, textarea').forEach(el => {
         el.disabled = true;
@@ -484,10 +489,111 @@ function upsertAgentProgress(contentEl, eventData) {
     }
 }
 
+function removeFinalEvalPanel(messageEl) {
+    if (!messageEl) return;
+    const panel = messageEl.querySelector('.final-eval-panel');
+    if (panel) panel.remove();
+}
+
+function renderFinalEvalPanel(messageEl) {
+    if (!messageEl || activeHumanGate) return;
+    removeFinalEvalPanel(messageEl);
+    const bubble = messageEl.querySelector('.bubble');
+    if (!bubble || !messageEl.dataset.sessionId) return;
+
+    const panel = document.createElement('div');
+    panel.className = 'final-eval-panel';
+    panel.innerHTML = `
+        <div class="final-eval-title">这次回答是否满足你的预期？</div>
+        <div class="final-eval-actions">
+            <button type="button" class="final-eval-btn" data-action="accepted">接受</button>
+            <button type="button" class="final-eval-btn" data-action="revise">纠偏回答</button>
+            <button type="button" class="final-eval-btn" data-action="replan">调整方向</button>
+        </div>
+        <div class="final-eval-input" hidden>
+            <textarea class="final-eval-textarea" rows="2" placeholder="说明你希望如何调整..."></textarea>
+            <button type="button" class="final-eval-btn primary" data-action="submit">提交</button>
+        </div>
+        <div class="final-eval-status" aria-live="polite"></div>
+    `;
+    bubble.appendChild(panel);
+
+    let selectedAction = '';
+    const inputWrap = panel.querySelector('.final-eval-input');
+    const textarea = panel.querySelector('.final-eval-textarea');
+    const status = panel.querySelector('.final-eval-status');
+
+    panel.querySelector('[data-action="accepted"]').onclick = async () => {
+        panel.querySelectorAll('button, textarea').forEach(el => { el.disabled = true; });
+        status.textContent = '已记录。';
+        try {
+            await fetch(`${API_BASE}/chat-final-eval`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: messageEl.dataset.sessionId,
+                    action: 'accepted',
+                    message: '',
+                }),
+            });
+        } catch (e) {
+            status.textContent = `记录失败：${e.message}`;
+        }
+    };
+
+    ['revise', 'replan'].forEach(action => {
+        panel.querySelector(`[data-action="${action}"]`).onclick = () => {
+            selectedAction = action;
+            inputWrap.hidden = false;
+            textarea.focus();
+        };
+    });
+
+    panel.querySelector('[data-action="submit"]').onclick = async () => {
+        const feedback = textarea.value.trim();
+        if (!selectedAction || !feedback || isGenerating) {
+            textarea.focus();
+            return;
+        }
+        panel.querySelectorAll('button, textarea').forEach(el => { el.disabled = true; });
+        status.textContent = '正在根据反馈继续处理...';
+        try {
+            const response = await fetch(`${API_BASE}/chat-final-eval`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: messageEl.dataset.sessionId,
+                    action: selectedAction,
+                    message: feedback,
+                }),
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+            if (data.query) {
+                sendMessage(feedback, {
+                    appendUserBubble: true,
+                    queryOverride: data.query,
+                });
+            }
+        } catch (e) {
+            status.textContent = `提交失败：${e.message}`;
+            panel.querySelectorAll('button, textarea').forEach(el => { el.disabled = false; });
+        }
+    };
+}
+
 function renderHumanGatePrompt(container, humanGate, messageEl = null, thinkingChain = []) {
     if (!container || !humanGate || !humanGate.needs_human_input) return;
 
     const reason = humanGate.reason || '继续执行前需要你确认一点信息。';
+    const gateTitles = {
+        clarification: '需要补充信息',
+        confirmation: '需要确认',
+        preference: '需要选择偏好',
+        risk_approval: '风险确认',
+        none: '需要确认',
+    };
+    const gateTitle = gateTitles[humanGate.gate_type] || '需要确认';
     const questions = Array.isArray(humanGate.questions)
         ? humanGate.questions.filter(Boolean)
         : [];
@@ -501,7 +607,7 @@ function renderHumanGatePrompt(container, humanGate, messageEl = null, thinkingC
     container.innerHTML = `
         <div class="human-gate-panel">
             <div class="human-gate-header">
-                <div class="human-gate-title">需要确认</div>
+                <div class="human-gate-title">${escapeHtml(gateTitle)}</div>
                 ${confidence ? `<div class="human-gate-confidence">置信度 ${escapeHtml(confidence)}</div>` : ''}
             </div>
             <div class="human-gate-reason">${escapeHtml(reason)}</div>
@@ -549,7 +655,7 @@ function renderHumanGatePrompt(container, humanGate, messageEl = null, thinkingC
             textarea.focus();
             return;
         }
-        submitHumanGateResponse(`补充信息：${supplement}`);
+        submitHumanGateResponse(supplement);
     };
     textarea.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' && !event.shiftKey) {
@@ -830,6 +936,9 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                     if (Object.keys(agentResults).length > 0 || planRationale || evalAction) {
                                         buildProcessDetails(detailsEl, thinkingChain, totalIterations, agentNameMap);
                                     }
+                                    if (!eventData.human_gate?.needs_human_input && !['HUMAN_CANCELLED', 'NEEDS_HUMAN_INPUT', 'AMBIGUOUS'].includes(evalAction)) {
+                                        renderFinalEvalPanel(messageEl);
+                                    }
                                     streamingTokens = false;
                                     break;
 
@@ -855,6 +964,9 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                         }
                                         if (Object.keys(agentResults).length > 0 || planRationale || evalAction) {
                                             buildProcessDetails(detailsEl, thinkingChain, totalIterations, agentNameMap);
+                                        }
+                                        if (!eventData.human_gate?.needs_human_input && !['HUMAN_CANCELLED', 'NEEDS_HUMAN_INPUT', 'AMBIGUOUS'].includes(evalAction)) {
+                                            renderFinalEvalPanel(messageEl);
                                         }
                                     }
                                     break;

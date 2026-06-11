@@ -33,7 +33,10 @@ def _messages_with_current_once(messages, query: str):
         msg for msg in (messages or [])
         if not (
             isinstance(msg, HumanMessage)
-            and "【Conversation Router】" in str(msg.content)
+            and (
+                "【Conversation Router】" in str(msg.content)
+                or "【Human Gate】" in str(msg.content)
+            )
         )
     ]
     if not updated or not (

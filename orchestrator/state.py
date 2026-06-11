@@ -57,6 +57,10 @@ class TaskItem(BaseModel):
 
 class HumanGateDecision(BaseModel):
     """Planner 对是否需要人工参与的结构化 gate 判断。"""
+    gate_type: Literal["none", "clarification", "confirmation", "preference", "risk_approval"] = Field(
+        default="none",
+        description="人工参与类型：无、澄清、确认、偏好选择或风险审批。"
+    )
     intent_is_clear: bool = Field(
         default=True,
         description="当前用户意图是否明确。"

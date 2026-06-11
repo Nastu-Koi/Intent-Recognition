@@ -53,16 +53,21 @@ async def human_gate_node(state: OrchestratorState) -> dict:
         if normalized_action == "approve"
         else "用户补充了信息，请基于补充内容重新规划。"
     )
-    return {
+    update = {
         "plan": next_plan,
         "human_gate_response": {
             "action": normalized_action,
             "message": user_note,
+            "gate_type": human_gate.get("gate_type", "none"),
             "previous_gate": human_gate,
         },
-        "messages": [HumanMessage(content=f"【Human Gate】{user_note}")],
-        "query": user_note,
         "eval_action": "",
         "eval_thought": "",
         "final_text": "",
     }
+    if normalized_action == "supplement":
+        update.update({
+            "messages": [HumanMessage(content=user_note)],
+            "query": user_note,
+        })
+    return update
