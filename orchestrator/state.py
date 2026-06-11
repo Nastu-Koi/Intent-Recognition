@@ -30,7 +30,10 @@ def _merge_file_ctx(
         return new
     merged: Dict[str, Any] = {}
     for key in ("images", "documents"):
-        old_list = old.get(key) or []
+        old_list = [
+            {**item, "is_current_upload": False} if isinstance(item, dict) else item
+            for item in (old.get(key) or [])
+        ]
         new_list = new.get(key) or []
         combined = old_list + new_list
         if combined:
@@ -52,6 +55,48 @@ class TaskItem(BaseModel):
     )
 
 
+class HumanGateDecision(BaseModel):
+    """Planner 对是否需要人工参与的结构化 gate 判断。"""
+    intent_is_clear: bool = Field(
+        default=True,
+        description="当前用户意图是否明确。"
+    )
+    has_multiple_reasonable_interpretations: bool = Field(
+        default=False,
+        description="任务目标是否存在多种合理解释。"
+    )
+    involves_high_risk_action: bool = Field(
+        default=False,
+        description="是否涉及高风险动作，如写数据库、调用外部服务、不可逆操作。"
+    )
+    missing_critical_parameters: bool = Field(
+        default=False,
+        description="是否缺少执行任务必需的关键参数。"
+    )
+    confidence: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Planner 对当前计划可直接执行的置信度，0 到 1。"
+    )
+    needs_human_input: bool = Field(
+        default=False,
+        description="是否需要用户确认或补充信息。"
+    )
+    reason: str = Field(
+        default="",
+        description="触发或不触发人工参与的简要原因。"
+    )
+    questions: List[str] = Field(
+        default_factory=list,
+        description="需要询问用户的问题列表。仅在 needs_human_input=true 时填写。"
+    )
+    proposed_plan: List[str] = Field(
+        default_factory=list,
+        description="等待确认或补充后建议执行的高层步骤。"
+    )
+
+
 class PlanOutput(BaseModel):
     """Planner 节点的结构化输出。"""
     rationale: str = Field(
@@ -60,6 +105,11 @@ class PlanOutput(BaseModel):
     tasks: List[TaskItem] = Field(
         description="本轮需要并发执行的任务列表。空列表表示无需调度 Agent（闲聊/直接回复）。"
     )
+    human_gate: HumanGateDecision = Field(
+        default_factory=HumanGateDecision,
+        description="Human-in-the-loop gate 决策，用于判断是否先请求用户确认或补充信息。"
+    )
+
 
 
 class EvalResult(BaseModel):
@@ -157,3 +207,4 @@ class OrchestratorState(MessagesState):
     final_text: str                                             # Final_Reply 的输出
     thinking_chain: List[Dict[str, Any]]                        # 完整思维链历史
     conversation_route: Dict[str, Any]                           # Conversation Router 打标结果
+    human_gate_response: Dict[str, Any]                          # 用户对 Planner human gate 的 resume 响应

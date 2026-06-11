@@ -251,6 +251,13 @@ class GeneralChatAgent(SubAgent):
         """从上下文中收集所有可用的文件路径。"""
         file_paths = []
 
+        # 0. 本轮新上传文件优先，避免多轮 checkpoint 中的旧文件被误选。
+        if context.get("current_file_paths"):
+            for fp in context["current_file_paths"]:
+                if fp not in file_paths:
+                    file_paths.append(fp)
+            return file_paths
+
         # 1. 直接从 context.file_paths 获取
         if context.get("file_paths"):
             file_paths.extend(context["file_paths"])
@@ -263,12 +270,18 @@ class GeneralChatAgent(SubAgent):
 
         # 3. 从 A2A metadata.file_ctx 获取
         file_ctx = context.get("file_ctx") or context.get("metadata", {}).get("file_ctx") or {}
+        current_paths = []
         for category in ("images", "documents"):
             for f in file_ctx.get(category, []):
                 if isinstance(f, dict) and f.get("file_path"):
                     fp = f["file_path"]
+                    if f.get("is_current_upload"):
+                        current_paths.append(fp)
                     if fp not in file_paths:
                         file_paths.append(fp)
+
+        if current_paths:
+            return list(dict.fromkeys(current_paths))
 
         return file_paths
 

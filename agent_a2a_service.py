@@ -189,14 +189,19 @@ async def a2a_endpoint(agent_id: str, request: JSONRPCRequest) -> dict[str, Any]
         "skill_context": metadata.get("skill_context"),
     }
 
-    # 注入文件路径 (供 dify_file_uploader 使用)
-    file_paths = []
+    # 注入文件路径。若本轮有新上传文件，只处理本轮文件，避免旧 checkpoint 文件污染当前任务。
+    all_file_paths = []
+    current_file_paths = []
     for category in ("images", "documents"):
         for f in file_ctx.get(category, []):
             if isinstance(f, dict) and f.get("file_path"):
-                file_paths.append(f["file_path"])
+                all_file_paths.append(f["file_path"])
+                if f.get("is_current_upload"):
+                    current_file_paths.append(f["file_path"])
+    file_paths = current_file_paths or all_file_paths
     if file_paths:
         context["file_paths"] = file_paths
+        context["current_file_paths"] = current_file_paths
 
     # 注入上游结果 (纯文本，供参考)
     if prior_results:

@@ -52,7 +52,23 @@ async def _yield_graph_event(
 ) -> AsyncGenerator[tuple[str, str | None], None]:
     """Convert one LangGraph update into SSE events."""
     for node_name, node_output in event.items():
-        if node_name == "conversation_router":
+        if node_name == "__interrupt__":
+            interrupts = node_output or []
+            interrupt_value = {}
+            interrupt_id = ""
+            if interrupts:
+                first_interrupt = interrupts[0]
+                interrupt_value = getattr(first_interrupt, "value", {}) or {}
+                interrupt_id = getattr(first_interrupt, "id", "") or ""
+            yield StreamEvent(
+                "human_gate_interrupt",
+                {
+                    "interrupt_id": interrupt_id,
+                    **(interrupt_value if isinstance(interrupt_value, dict) else {"value": interrupt_value}),
+                }
+            ).to_sse_format(), "__interrupt__"
+
+        elif node_name == "conversation_router":
             route = node_output.get("conversation_route", {}) if isinstance(node_output, dict) else {}
             yield StreamEvent(
                 "conversation_router",
@@ -71,12 +87,14 @@ async def _yield_graph_event(
 
             plan = node_output.get("plan", {})
             plan_tasks = plan.get("tasks", [])
+            human_gate = plan.get("human_gate", {})
 
             yield StreamEvent(
                 "planner",
                 {
                     "iteration": iteration_count,
                     "rationale": plan.get("rationale", ""),
+                    "human_gate": human_gate,
                     "tasks_count": len(plan_tasks),
                     "tasks": [
                         {
@@ -135,9 +153,10 @@ async def _yield_graph_event(
                 "final_reply",
                 {
                     "answer": final_text,
-                    "streamed": True,  # 标记: 内容已通过 final_reply_token 逐 token 推送
+                    "streamed": bool(node_output.get("streamed", False)),
                     "total_iterations": node_output.get("iterations", 0),
                     "plan_rationale": node_output.get("plan_rationale", ""),
+                    "human_gate": (node_output.get("plan") or {}).get("human_gate", {}),
                     "eval_action": node_output.get("eval_action", ""),
                     "agent_results": {
                         k: str(v)
@@ -169,8 +188,9 @@ async def _yield_graph_event(
 
 async def stream_orchestrator_graph(
     graph,
-    initial_state: Dict[str, Any],
+    initial_state: Any,
     config: Dict[str, Any],
+    agent_source_state: Dict[str, Any] | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     使用 astream 流式执行 LangGraph，并转换为 SSE 格式。
@@ -197,7 +217,8 @@ async def stream_orchestrator_graph(
         last_node = None
         
         # 从 initial_state 获取可用 agents 映射 (agent_id -> agent info)
-        available_agents = initial_state.get("available_agents", [])
+        source_state = agent_source_state or (initial_state if isinstance(initial_state, dict) else {})
+        available_agents = source_state.get("available_agents", [])
         agent_name_map = {agent["agent_id"]: agent.get("name", agent["agent_id"]) for agent in available_agents}
         logger.info(f"[Streaming] agent_name_map created: {agent_name_map}")
         
@@ -244,11 +265,12 @@ async def stream_orchestrator_graph(
             _progress_queue.reset(token)
         
         # 发送完成事件
+        done_status = "interrupted" if last_node == "__interrupt__" else "success"
         yield StreamEvent(
             "done",
             {
-                "message": "思维链执行完成",
-                "status": "success",
+                "message": "等待用户确认" if done_status == "interrupted" else "思维链执行完成",
+                "status": done_status,
             }
         ).to_sse_format()
         

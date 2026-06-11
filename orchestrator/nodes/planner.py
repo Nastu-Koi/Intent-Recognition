@@ -9,7 +9,7 @@ Planner Node — 动态感知 Agent Cards 的规划节点。
 
 import json
 from langchain_core.messages import SystemMessage, HumanMessage
-from orchestrator.state import OrchestratorState, PlanOutput
+from orchestrator.state import OrchestratorState, PlanOutput, HumanGateDecision
 from engine.llm_factory import get_llm_model
 from engine.logging_config import get_logger
 
@@ -59,6 +59,67 @@ def _build_agent_catalog(available_agents: list[dict]) -> str:
             f"  示例问题: {', '.join(agent.get('examples', []))}"
         )
     return "\n".join(lines)
+
+
+def _normalize_human_gate(raw_gate: dict | HumanGateDecision | None) -> dict:
+    """Return a complete, JSON-serializable human gate decision."""
+    if isinstance(raw_gate, HumanGateDecision):
+        gate = raw_gate.model_dump()
+    elif isinstance(raw_gate, dict):
+        gate = raw_gate.copy()
+    else:
+        gate = {}
+    try:
+        confidence = float(gate.get("confidence", 1.0) or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    confidence = max(0.0, min(1.0, confidence))
+
+    def as_bool(value, default=False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "y", "是"}
+        return bool(value)
+
+    normalized = HumanGateDecision(
+        intent_is_clear=as_bool(gate.get("intent_is_clear"), True),
+        has_multiple_reasonable_interpretations=as_bool(
+            gate.get("has_multiple_reasonable_interpretations"), False
+        ),
+        involves_high_risk_action=as_bool(gate.get("involves_high_risk_action"), False),
+        missing_critical_parameters=as_bool(gate.get("missing_critical_parameters"), False),
+        confidence=confidence,
+        needs_human_input=as_bool(gate.get("needs_human_input"), False),
+        reason=str(gate.get("reason", "") or ""),
+        questions=[
+            str(question).strip()
+            for question in (gate.get("questions") or [])
+            if str(question).strip()
+        ],
+        proposed_plan=[
+            str(step).strip()
+            for step in (gate.get("proposed_plan") or [])
+            if str(step).strip()
+        ],
+    ).model_dump()
+
+    if normalized["confidence"] < 0.7:
+        normalized["needs_human_input"] = True
+        if not normalized["reason"]:
+            normalized["reason"] = "Planner 对当前计划置信度较低。"
+    if (
+        normalized["has_multiple_reasonable_interpretations"]
+        or normalized["involves_high_risk_action"]
+        or normalized["missing_critical_parameters"]
+    ):
+        normalized["needs_human_input"] = True
+    if normalized["needs_human_input"] and not normalized["questions"]:
+        normalized["questions"] = ["请补充你的目标、偏好或确认是否继续执行该计划。"]
+
+    return normalized
 
 
 async def planner_node(state: OrchestratorState) -> dict:
@@ -120,17 +181,26 @@ async def planner_node(state: OrchestratorState) -> dict:
 
     # ─── 构建文件上下文描述 ───
     file_ctx = state.get("file_ctx") or {}
+    current_file_ctx = {}
+    for category in ("images", "documents"):
+        current_items = [
+            f for f in (file_ctx.get(category) or [])
+            if isinstance(f, dict) and f.get("is_current_upload")
+        ]
+        if current_items:
+            current_file_ctx[category] = current_items
+    file_ctx_for_prompt = current_file_ctx or file_ctx
     file_summary = []
-    if "images" in file_ctx and file_ctx["images"]:
+    if "images" in file_ctx_for_prompt and file_ctx_for_prompt["images"]:
         names = [
             f"{f.get('file_name', 'unknown')} ({f.get('file_type', 'image')})"
-            for f in file_ctx["images"]
+            for f in file_ctx_for_prompt["images"]
         ]
         file_summary.append(f"{len(names)} 张图片 [{', '.join(names)}]")
-    if "documents" in file_ctx and file_ctx["documents"]:
+    if "documents" in file_ctx_for_prompt and file_ctx_for_prompt["documents"]:
         names = [
             f"{f.get('file_name', 'unknown')} ({f.get('file_type', 'document')})"
-            for f in file_ctx["documents"]
+            for f in file_ctx_for_prompt["documents"]
         ]
         file_summary.append(f"{len(names)} 份文档 [{', '.join(names)}]")
     file_str = "; ".join(file_summary) if file_summary else "无文件"
@@ -143,7 +213,9 @@ async def planner_node(state: OrchestratorState) -> dict:
     effective_query = state.get("query", "")
 
     # ─── 构建反馈历史上下文 ───
-    if relation == "not_related":
+    has_human_gate_response = bool(state.get("human_gate_response") or {})
+
+    if relation == "not_related" and not has_human_gate_response:
         current_iter = 0
         feedback_history = []
     else:
@@ -187,6 +259,19 @@ async def planner_node(state: OrchestratorState) -> dict:
     else:
         skill_ctx = ""
 
+    human_gate_response = state.get("human_gate_response") or {}
+    if human_gate_response:
+        gate_response_ctx = (
+            "\n### Human Gate Resume 响应（必须遵守）\n"
+            f"action: {human_gate_response.get('action', '')}\n"
+            f"message: {human_gate_response.get('message', '')}\n"
+            "如果 action=approve，表示用户已经确认上一轮 human_gate 中提出的问题和拟定计划；"
+            "请不要因为同一个原因重复触发 human_gate，应继续生成可执行 tasks。"
+            "如果 action=supplement，请结合补充信息重新规划；只有仍缺少新的关键参数或出现新的风险时才再次触发 human_gate。\n"
+        )
+    else:
+        gate_response_ctx = ""
+
     system_msg = SystemMessage(
         content=(
             "你是一个高度智能的多智能体系统规划专家（Strategic Planner）。\n"
@@ -208,9 +293,17 @@ async def planner_node(state: OrchestratorState) -> dict:
             f"9. **Skill + 文件处理**: 如果用户选择了 Skill 且当前可用文件不是“无文件”，"
             f"{'必须调度 `general_chat`，并在 instruction 中明确引用当前可用文件名与 skill 要求。' if has_general_chat else '必须调度一个具备文件处理能力的合法 Agent，不能直接返回空 tasks。'}"
             "不要声称用户没有提供文件。\n\n"
+            "10. **Human-in-the-loop Gate**: 你必须先做结构化 gate 判断，再决定是否生成可执行 tasks。"
+            "不要每次都询问用户；只有触发下列条件时才将 human_gate.needs_human_input 设为 true："
+            "Planner 置信度低于 0.7、目标存在多种合理解释、存在多方案取舍或用户偏好未明确、"
+            "缺少关键参数、执行成本较高、涉及写数据库/调用会产生业务副作用的外部服务/不可逆操作等动作。"
+            "普通只读问答、检索、总结、图片或文档分析不属于高风险动作。"
+            "如果 needs_human_input=true，questions 必须给出 1-3 个具体问题，proposed_plan 必须给出等待确认后的高层步骤，"
+            "并且 tasks 必须为空数组，避免在用户确认前执行任何 Agent。\n\n"
 
             f"【当前可用文件】: {file_str}\n"
             f"{skill_ctx}"
+            f"{gate_response_ctx}"
             f"{iteration_ctx}"
             f"{results_ctx}"
 
@@ -249,8 +342,10 @@ async def planner_node(state: OrchestratorState) -> dict:
             "  - \"怎么填报销\" → \"用户需要了解报销单的填报步骤和注意事项\"\n\n"
 
             "### 输出格式:\n"
-            "你必须输出 JSON，包含 rationale (规划思路) 和 tasks (任务列表)。\n"
+            "你必须输出 JSON，包含 rationale (规划思路)、tasks (任务列表) 和 human_gate (人工参与 gate 决策)。\n"
             "每个 task 包含 target (agent_id) 和 instruction (执行指令)。\n"
+            "human_gate 必须包含: intent_is_clear, has_multiple_reasonable_interpretations, involves_high_risk_action, "
+            "missing_critical_parameters, confidence, needs_human_input, reason, questions, proposed_plan。\n"
             "如果是通用问题无需调度 Agent，则 tasks 为空数组。\n"
         )
     )
@@ -279,7 +374,7 @@ async def planner_node(state: OrchestratorState) -> dict:
 
     # related 保留完整历史；not_related 只保留当前轮，避免旧上下文污染新对话
     all_messages = state.get("messages", [])
-    if relation == "not_related":
+    if relation == "not_related" and not human_gate_response:
         messages = [HumanMessage(content=state.get("query", ""))]
     else:
         messages = all_messages
@@ -291,7 +386,8 @@ async def planner_node(state: OrchestratorState) -> dict:
             plan: PlanOutput = await structured_llm.ainvoke([system_msg] + messages)
             plan_data = {
                 "rationale": plan.rationale,
-                "tasks": [t.model_dump() for t in plan.tasks]
+                "tasks": [t.model_dump() for t in plan.tasks],
+                "human_gate": _normalize_human_gate(plan.human_gate),
             }
         else:
             # 降级：原始 LLM + JSON 手动解析
@@ -317,8 +413,18 @@ async def planner_node(state: OrchestratorState) -> dict:
 
             plan_data = {
                 "rationale": raw.get("rationale", ""),
-                "tasks": raw.get("tasks", [])
+                "tasks": raw.get("tasks", []),
+                "human_gate": _normalize_human_gate(raw.get("human_gate")),
             }
+
+        plan_data["human_gate"] = _normalize_human_gate(plan_data.get("human_gate"))
+        if plan_data["human_gate"].get("needs_human_input"):
+            logger.info(
+                "[Planner] Human gate triggered: reason=%s confidence=%.2f",
+                plan_data["human_gate"].get("reason", ""),
+                plan_data["human_gate"].get("confidence", 0.0),
+            )
+            plan_data["tasks"] = []
 
         # 校验任务格式和 target 合法性
         tasks = plan_data.get("tasks", [])
@@ -354,14 +460,15 @@ async def planner_node(state: OrchestratorState) -> dict:
 
         logger.info(
             f"[Planner] Rationale: {plan_data['rationale'][:200]}... | "
-            f"Tasks: {[t['target'] for t in plan_data['tasks']]}"
+            f"Tasks: {[t['target'] for t in plan_data['tasks']]} | "
+            f"HumanGate: {plan_data['human_gate'].get('needs_human_input')}"
         )
 
         update = {
             "plan": plan_data,
             "iter": current_iter + 1,
         }
-        if relation == "not_related":
+        if relation == "not_related" and not human_gate_response:
             update.update(
                 {
                     "results": {},
@@ -370,6 +477,7 @@ async def planner_node(state: OrchestratorState) -> dict:
                     "eval_action": "",
                     "eval_thought": "",
                     "thinking_chain": [],
+                    "human_gate_response": {},
                 }
             )
         return update
@@ -377,7 +485,17 @@ async def planner_node(state: OrchestratorState) -> dict:
     except Exception as e:
         logger.error(f"[Planner Error]: {e}")
         # 降级：生成空计划
-        fallback = {"rationale": f"规划异常: {e}", "tasks": []}
+        fallback = {
+            "rationale": f"规划异常: {e}",
+            "tasks": [],
+            "human_gate": _normalize_human_gate({
+                "needs_human_input": True,
+                "reason": "Planner 规划异常，需要用户确认下一步。",
+                "questions": ["刚才的规划失败了。你希望我重试，还是补充更具体的目标后再继续？"],
+                "proposed_plan": ["等待用户确认", "重新规划任务", "选择对应 Agent 执行"],
+                "confidence": 0.0,
+            }),
+        }
         return {
             "plan": fallback,
             "iter": 1

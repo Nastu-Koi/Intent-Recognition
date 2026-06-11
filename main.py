@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.types import Command
 from psycopg_pool import AsyncConnectionPool
 
 from engine.llm_factory import load_env_file
@@ -144,6 +145,51 @@ RBAC = RoleBasedAccessControl()
 
 # Agent Card 缓存
 _CACHED_CARDS = None
+
+
+async def _save_uploaded_file(upload: UploadFile, *, current_upload: bool = False) -> Dict[str, Any]:
+    """Persist an UploadFile with a unique server filename and return file metadata."""
+    file_id = str(uuid.uuid4())
+    original_name = Path(upload.filename or f"{file_id}.bin").name
+    save_name = f"{file_id}_{original_name}"
+    save_path = UPLOAD_DIR / save_name
+
+    with open(save_path, "wb") as out:
+        content = await upload.read()
+        out.write(content)
+
+    ext_lower = Path(original_name).suffix.lower().lstrip(".")
+    file_info: Dict[str, Any] = {
+        "file_id": file_id,
+        "file_name": original_name,
+        "file_path": str(save_path),
+        "stored_file_name": save_name,
+        "is_current_upload": current_upload,
+    }
+    if ext_lower in ("png", "jpg", "jpeg", "bmp", "webp", "gif"):
+        file_info["file_type"] = "image"
+    else:
+        file_info["file_type"] = "document"
+    return file_info
+
+
+def _without_current_upload_marks(file_ctx: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return file_ctx with persisted current-upload markers cleared."""
+    if not file_ctx:
+        return file_ctx
+    cleaned: Dict[str, Any] = {}
+    for key in ("images", "documents"):
+        items = []
+        for item in file_ctx.get(key) or []:
+            if isinstance(item, dict):
+                next_item = item.copy()
+                next_item["is_current_upload"] = False
+                items.append(next_item)
+            else:
+                items.append(item)
+        if items:
+            cleaned[key] = items
+    return cleaned or None
 
 
 def _get_agent_cards():
@@ -319,7 +365,7 @@ async def _get_checkpoint_file_ctx(session_id: str) -> Optional[Dict[str, Any]]:
         )
         if checkpoint_tuple:
             channel_values = checkpoint_tuple.checkpoint.get("channel_values", {})
-            return channel_values.get("file_ctx")
+            return _without_current_upload_marks(channel_values.get("file_ctx"))
     except Exception:
         pass
     return None
@@ -380,6 +426,7 @@ async def _get_checkpoint_state(session_id: str) -> Dict[str, Any]:
                 "_agent_outputs": channel_values.get("_agent_outputs", {}),
                 "feedback_history": channel_values.get("feedback_history", []),
                 "conversation_route": channel_values.get("conversation_route", {}),
+                "human_gate_response": channel_values.get("human_gate_response", {}),
                 "iter": channel_values.get("iter", 0),
             }
             logger.info(f"[_get_checkpoint_state] session={session_id} restored state:")
@@ -409,6 +456,33 @@ def _extract_dify_conversation_id(state: Dict[str, Any]) -> str:
     return ""
 
 
+def _interrupt_human_gate(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract human_gate payload from a LangGraph interrupt result."""
+    interrupts = result.get("__interrupt__") or []
+    if not interrupts:
+        return {}
+    value = getattr(interrupts[0], "value", {}) or {}
+    if not isinstance(value, dict):
+        return {}
+    return value.get("human_gate") or {}
+
+
+def _human_gate_answer(human_gate: Dict[str, Any]) -> str:
+    reason = str(human_gate.get("reason") or "继续执行前需要你确认一点信息。").strip()
+    questions = [str(q).strip() for q in (human_gate.get("questions") or []) if str(q).strip()]
+    proposed_plan = [str(s).strip() for s in (human_gate.get("proposed_plan") or []) if str(s).strip()]
+    lines = [reason]
+    if questions:
+        lines.append("")
+        lines.append("我需要你确认：")
+        lines.extend(f"{idx}. {question}" for idx, question in enumerate(questions, start=1))
+    if proposed_plan:
+        lines.append("")
+        lines.append("确认后我会按这个方向继续：")
+        lines.extend(f"{idx}. {step}" for idx, step in enumerate(proposed_plan, start=1))
+    return "\n".join(lines)
+
+
 # ──────────────────────────────────────────────
 # Request / Response Models
 # ──────────────────────────────────────────────
@@ -425,10 +499,17 @@ class ChatResponse(BaseModel):
     session_id: str = Field(description="会话 ID")
     iterations: int = Field(description="迭代轮次")
     plan_rationale: str = Field(default="", description="Planner 规划思路")
+    human_gate: dict = Field(default_factory=dict, description="Planner human-in-the-loop gate 决策")
     eval_action: str = Field(default="", description="Evaluator 最终决策")
     eval_thought: str = Field(default="", description="Evaluator 思考过程")
     agent_results: dict = Field(default_factory=dict, description="各 Agent 执行结果")
     thinking_chain: List[dict] = Field(default_factory=list, description="完整思维链历史")
+
+
+class HumanGateResumeRequest(BaseModel):
+    session_id: str = Field(..., min_length=1, description="需要 resume 的会话 ID")
+    action: str = Field(..., description="用户动作: approve / deny / supplement")
+    message: str = Field(default="", description="用户确认文本或补充信息")
 
 
 # ──────────────────────────────────────────────
@@ -558,25 +639,22 @@ async def upload_file(file: UploadFile = File(...)):
 
     返回文件元信息，由前端在后续 /chat 请求中引用。
     """
-    file_id = str(uuid.uuid4())
-    save_name = file.filename or f"{file_id}.bin"
-    save_path = UPLOAD_DIR / save_name
+    file_info = await _save_uploaded_file(file, current_upload=True)
 
-    with open(save_path, "wb") as f:
-        content = await file.read()
-        f.write(content)
-
-    # 判断文件类型
-    ext_lower = Path(save_name).suffix.lower().lstrip(".")
-    file_type = "image" if ext_lower in ("png", "jpg", "jpeg", "bmp", "webp", "gif") else "document"
-
-    logger.info(f"File uploaded: {file.filename} -> {save_path} (type={file_type})")
+    logger.info(
+        "File uploaded: %s -> %s (type=%s)",
+        file_info["file_name"],
+        file_info["file_path"],
+        file_info["file_type"],
+    )
 
     return {
-        "file_id": file_id,
-        "file_name": file.filename,
-        "file_type": file_type,
-        "save_path": str(save_path),
+        "file_id": file_info["file_id"],
+        "file_name": file_info["file_name"],
+        "file_type": file_info["file_type"],
+        "save_path": file_info["file_path"],
+        "file_path": file_info["file_path"],
+        "stored_file_name": file_info["stored_file_name"],
     }
 
 
@@ -783,6 +861,7 @@ async def chat(request: ChatRequest):
         "thinking_chain": checkpoint_state.get("thinking_chain", []),
         "conversation_route": checkpoint_state.get("conversation_route", {}),
         "conversation_id": conversation_id,
+        "human_gate_response": checkpoint_state.get("human_gate_response", {}),
     }
 
     # ─── Step 4: 执行 LangGraph 图 ───
@@ -794,6 +873,19 @@ async def chat(request: ChatRequest):
 
     try:
         result = await graph.ainvoke(initial_state, config=config)
+        interrupted_gate = _interrupt_human_gate(result)
+        if interrupted_gate:
+            return ChatResponse(
+                answer=_human_gate_answer(interrupted_gate),
+                session_id=session_id,
+                iterations=result.get("iter", 0),
+                plan_rationale=(result.get("plan") or {}).get("rationale", ""),
+                human_gate=interrupted_gate,
+                eval_action="NEEDS_HUMAN_INPUT",
+                eval_thought=interrupted_gate.get("reason", ""),
+                agent_results={},
+                thinking_chain=result.get("thinking_chain", []),
+            )
         
         # 更新会话元数据 (异步不阻塞回复)
         if _STORE:
@@ -818,6 +910,7 @@ async def chat(request: ChatRequest):
             session_id=session_id,
             iterations=result.get("iter", 0),
             plan_rationale=(result.get("plan") or {}).get("rationale", ""),
+            human_gate=(result.get("plan") or {}).get("human_gate", {}),
             eval_action=result.get("eval_action", ""),
             eval_thought=result.get("eval_thought", ""),
             agent_results={
@@ -857,26 +950,10 @@ async def chat_with_files(
         documents = []
         for f in files:
             if f.filename:
-                file_id = str(uuid.uuid4())
-                save_name = f.filename or f"{file_id}.bin"
-                save_path = UPLOAD_DIR / save_name
-
-                with open(save_path, "wb") as out:
-                    content = await f.read()
-                    out.write(content)
-
-                ext_lower = Path(save_name).suffix.lower().lstrip(".")
-                file_info = {
-                    "file_id": file_id,
-                    "file_name": f.filename,
-                    "file_path": str(save_path),
-                }
-
-                if ext_lower in ("png", "jpg", "jpeg", "bmp", "webp", "gif"):
-                    file_info["file_type"] = "image"
+                file_info = await _save_uploaded_file(f, current_upload=True)
+                if file_info["file_type"] == "image":
                     images.append(file_info)
                 else:
-                    file_info["file_type"] = "document"
                     documents.append(file_info)
 
         if images or documents:
@@ -928,6 +1005,7 @@ async def chat_with_files(
         "thinking_chain": checkpoint_state.get("thinking_chain", []),
         "conversation_route": checkpoint_state.get("conversation_route", {}),
         "conversation_id": conversation_id,
+        "human_gate_response": checkpoint_state.get("human_gate_response", {}),
     }
 
     # 执行 LangGraph 图
@@ -939,6 +1017,19 @@ async def chat_with_files(
 
     try:
         result = await graph.ainvoke(initial_state, config=config)
+        interrupted_gate = _interrupt_human_gate(result)
+        if interrupted_gate:
+            return {
+                "answer": _human_gate_answer(interrupted_gate),
+                "session_id": sid,
+                "iterations": result.get("iter", 0),
+                "plan_rationale": (result.get("plan") or {}).get("rationale", ""),
+                "human_gate": interrupted_gate,
+                "eval_action": "NEEDS_HUMAN_INPUT",
+                "eval_thought": interrupted_gate.get("reason", ""),
+                "agent_results": {},
+                "thinking_chain": result.get("thinking_chain", []),
+            }
 
         # 更新会话元数据
         if _STORE:
@@ -962,6 +1053,7 @@ async def chat_with_files(
             "session_id": sid,
             "iterations": result.get("iter", 0),
             "plan_rationale": (result.get("plan") or {}).get("rationale", ""),
+            "human_gate": (result.get("plan") or {}).get("human_gate", {}),
             "eval_action": result.get("eval_action", ""),
             "eval_thought": result.get("eval_thought", ""),
             "agent_results": {
@@ -1064,6 +1156,7 @@ async def chat_stream(request: ChatRequest):
         "thinking_chain": checkpoint_state.get("thinking_chain", []),
         "conversation_route": checkpoint_state.get("conversation_route", {}),
         "conversation_id": conversation_id,
+        "human_gate_response": checkpoint_state.get("human_gate_response", {}),
     }
 
     # ─── Step 4: 使用 astream 流式执行 ───
@@ -1112,6 +1205,76 @@ async def chat_stream(request: ChatRequest):
     )
 
 
+@app.post("/chat-resume-stream")
+async def chat_resume_stream(request: HumanGateResumeRequest):
+    """Resume a paused LangGraph human gate and continue streaming the same run."""
+    session_id = request.session_id
+    checkpoint_state = await _get_checkpoint_state(session_id)
+    if not checkpoint_state:
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"No paused conversation found for session_id={session_id}"},
+        )
+
+    all_cards = _get_agent_cards()
+    role = ""
+    try:
+        checkpoint_tuple = await _CHECKPOINTER.aget_tuple(
+            {"configurable": {"thread_id": session_id}}
+        ) if _CHECKPOINTER else None
+        if checkpoint_tuple:
+            channel_values = checkpoint_tuple.checkpoint.get("channel_values", {})
+            role = channel_values.get("role", "") or ""
+    except Exception as e:
+        logger.warning("[ChatResume] Failed to restore role from checkpoint: %s", e)
+
+    filtered_cards = RBAC.filter_cards(all_cards, role or None)
+    available_agents = [_card_to_prompt_dict(c) for c in filtered_cards]
+    source_state = {"available_agents": available_agents}
+
+    graph = _get_graph()
+    config = {
+        "configurable": {"thread_id": session_id},
+        "recursion_limit": 25,
+    }
+    command = Command(
+        resume={
+            "action": request.action,
+            "message": request.message,
+        }
+    )
+
+    async def event_generator():
+        try:
+            async for event_data in stream_orchestrator_graph(
+                graph,
+                command,
+                config,
+                agent_source_state=source_state,
+            ):
+                yield event_data
+        except Exception as e:
+            logger.error(f"[ChatResume] Error during resume streaming: {e}", exc_info=True)
+            from engine.streaming import format_sse_response
+            yield format_sse_response("error", {"message": str(e), "status": "error"})
+        finally:
+            if _STORE:
+                final_state = await _get_checkpoint_state(session_id)
+                dify_conversation_id = _extract_dify_conversation_id(final_state)
+                if dify_conversation_id:
+                    await _STORE.set_conversation_id(session_id, dify_conversation_id)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Session-Id": session_id,
+        }
+    )
+
+
 @app.post("/chat-with-files-stream")
 async def chat_with_files_stream(
     query: str = Form(...),
@@ -1134,26 +1297,10 @@ async def chat_with_files_stream(
         documents = []
         for f in files:
             if f.filename:
-                file_id = str(uuid.uuid4())
-                save_name = f.filename or f"{file_id}.bin"
-                save_path = UPLOAD_DIR / save_name
-
-                with open(save_path, "wb") as out:
-                    content = await f.read()
-                    out.write(content)
-
-                ext_lower = Path(save_name).suffix.lower().lstrip(".")
-                file_info = {
-                    "file_id": file_id,
-                    "file_name": f.filename,
-                    "file_path": str(save_path),
-                }
-
-                if ext_lower in ("png", "jpg", "jpeg", "bmp", "webp", "gif"):
-                    file_info["file_type"] = "image"
+                file_info = await _save_uploaded_file(f, current_upload=True)
+                if file_info["file_type"] == "image":
                     images.append(file_info)
                 else:
-                    file_info["file_type"] = "document"
                     documents.append(file_info)
 
         if images or documents:
@@ -1218,6 +1365,7 @@ async def chat_with_files_stream(
         "thinking_chain": checkpoint_state.get("thinking_chain", []),
         "conversation_route": checkpoint_state.get("conversation_route", {}),
         "conversation_id": conversation_id,
+        "human_gate_response": checkpoint_state.get("human_gate_response", {}),
     }
 
     # 使用 astream 流式执行

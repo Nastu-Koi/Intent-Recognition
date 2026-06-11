@@ -8,6 +8,7 @@ let pendingFiles = [];
 let selectedSkill = null;
 let currentStreamingController = null; // For stopping stream generation
 let isGenerating = false; // Track generation state
+let activeHumanGate = null;
 const AGENT_DISPLAY_NAMES = {
     expense_assistant: '报销助手',
     general_chat: '通用对话助手',
@@ -80,20 +81,24 @@ async function loadRoles() {
 }
 
 // ─── Send Message ───
-async function sendMessage() {
-    const query = chatInput.value.trim();
+async function sendMessage(messageOverride = null, options = {}) {
+    const query = typeof messageOverride === 'string' ? messageOverride.trim() : chatInput.value.trim();
     
     if (!query && pendingFiles.length === 0) return;
 
     const text = query || '请分析上传的文件';
+    const appendUserBubble = options.appendUserBubble !== false;
+    dismissActiveHumanGate();
 
     // Hide welcome
     if (welcomeContainer) {
         welcomeContainer.style.display = 'none';
     }
 
-    // Show user message
-    appendMessage('user', text);
+    // Show user message unless this is a hidden HITL continuation.
+    if (appendUserBubble) {
+        appendMessage('user', text);
+    }
     chatInput.value = '';
     chatInput.style.height = 'auto';
     chatInput.placeholder = '输入问题或拖入文件...'; // Reset placeholder
@@ -146,6 +151,74 @@ async function sendMessage() {
     uploadBtn.disabled = false;
     chatInput.placeholder = '输入问题或拖入文件...'; // Ensure placeholder is reset
     chatInput.focus();
+}
+
+function submitHumanGateResponse(text) {
+    if (isGenerating || !text.trim()) return;
+    if (activeHumanGate && activeHumanGate.panel && activeHumanGate.panel.isConnected) {
+        const status = activeHumanGate.panel.querySelector('.human-gate-status');
+        if (status) {
+            status.textContent = '已收到，正在基于当前计划继续处理...';
+        }
+    }
+    sendHumanGateResume('supplement', text.trim());
+}
+
+async function sendHumanGateResume(action, message) {
+    if (!activeHumanGate || !sessionId || isGenerating) return;
+
+    const gateContext = activeHumanGate;
+    const status = gateContext.panel.querySelector('.human-gate-status');
+    if (status) {
+        status.textContent = '已收到，正在基于当前计划继续处理...';
+    }
+    gateContext.panel.querySelectorAll('button, textarea').forEach(el => {
+        el.disabled = true;
+    });
+    gateContext.panel.classList.add('resolved');
+    activeHumanGate = null;
+
+    currentStreamingController = new AbortController();
+    isGenerating = true;
+    updateSendButtonState();
+    chatInput.disabled = true;
+    uploadBtn.disabled = true;
+
+    try {
+        const response = await fetch(`${API_BASE}/chat-resume-stream`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session_id: sessionId,
+                action,
+                message,
+            }),
+            signal: currentStreamingController.signal,
+        });
+        await processStreamResponse(response, gateContext.messageEl, gateContext.thinkingChain);
+    } catch (e) {
+        if (e.name !== 'AbortError') {
+            appendMessage('agent', `❌ 继续执行失败: ${e.message}`);
+        }
+    } finally {
+        isGenerating = false;
+        currentStreamingController = null;
+        updateSendButtonState();
+        chatInput.disabled = false;
+        uploadBtn.disabled = false;
+        chatInput.focus();
+    }
+}
+
+function dismissActiveHumanGate() {
+    if (!activeHumanGate) return;
+    if (activeHumanGate.panel && activeHumanGate.panel.isConnected) {
+        activeHumanGate.panel.querySelectorAll('button, textarea').forEach(el => {
+            el.disabled = true;
+        });
+        activeHumanGate.panel.classList.add('resolved');
+    }
+    activeHumanGate = null;
 }
 
 // ─── Stop Generation ───
@@ -411,6 +484,81 @@ function upsertAgentProgress(contentEl, eventData) {
     }
 }
 
+function renderHumanGatePrompt(container, humanGate, messageEl = null, thinkingChain = []) {
+    if (!container || !humanGate || !humanGate.needs_human_input) return;
+
+    const reason = humanGate.reason || '继续执行前需要你确认一点信息。';
+    const questions = Array.isArray(humanGate.questions)
+        ? humanGate.questions.filter(Boolean)
+        : [];
+    const proposedPlan = Array.isArray(humanGate.proposed_plan)
+        ? humanGate.proposed_plan.filter(Boolean)
+        : [];
+    const confidence = typeof humanGate.confidence === 'number'
+        ? `${Math.round(humanGate.confidence * 100)}%`
+        : '';
+
+    container.innerHTML = `
+        <div class="human-gate-panel">
+            <div class="human-gate-header">
+                <div class="human-gate-title">需要确认</div>
+                ${confidence ? `<div class="human-gate-confidence">置信度 ${escapeHtml(confidence)}</div>` : ''}
+            </div>
+            <div class="human-gate-reason">${escapeHtml(reason)}</div>
+            ${questions.length ? `
+                <div class="human-gate-section">
+                    <div class="human-gate-label">请确认</div>
+                    <ol class="human-gate-list">
+                        ${questions.map(q => `<li>${escapeHtml(q)}</li>`).join('')}
+                    </ol>
+                </div>
+            ` : ''}
+            ${proposedPlan.length ? `
+                <div class="human-gate-section">
+                    <div class="human-gate-label">拟定计划</div>
+                    <ol class="human-gate-list">
+                        ${proposedPlan.map(step => `<li>${escapeHtml(step)}</li>`).join('')}
+                    </ol>
+                </div>
+            ` : ''}
+            <div class="human-gate-actions">
+                <button type="button" class="human-gate-btn primary" data-action="approve">是</button>
+                <button type="button" class="human-gate-btn" data-action="deny">否，取消</button>
+            </div>
+            <div class="human-gate-supplement">
+                <textarea class="human-gate-textarea" rows="2" placeholder="补充信息或修改要求..."></textarea>
+                <button type="button" class="human-gate-btn secondary" data-action="supplement">提交补充</button>
+            </div>
+            <div class="human-gate-status" aria-live="polite"></div>
+        </div>
+    `;
+
+    const panel = container.querySelector('.human-gate-panel');
+    const textarea = panel.querySelector('.human-gate-textarea');
+    activeHumanGate = { gate: humanGate, panel, messageEl, thinkingChain };
+
+    panel.querySelector('[data-action="approve"]').onclick = () => {
+        sendHumanGateResume('approve', '确认，按你提出的计划继续执行。');
+    };
+    panel.querySelector('[data-action="deny"]').onclick = () => {
+        sendHumanGateResume('deny', '否，先取消这次计划，不要继续执行。');
+    };
+    panel.querySelector('[data-action="supplement"]').onclick = () => {
+        const supplement = textarea.value.trim();
+        if (!supplement) {
+            textarea.focus();
+            return;
+        }
+        submitHumanGateResponse(`补充信息：${supplement}`);
+    };
+    textarea.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            panel.querySelector('[data-action="supplement"]').click();
+        }
+    });
+}
+
 
 function renderAgentResultsHtml(agentResults, labels = {}) {
     if (!agentResults || typeof agentResults !== 'object') return '';
@@ -518,6 +666,18 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                     plannerCount++;
                                     planRationale = eventData.rationale;
                                     accumulatedContent = `规划阶段 (第 ${eventData.iteration} 轮)\n${eventData.rationale}`; // 累积规划思考过程
+                                    if (eventData.human_gate && eventData.human_gate.needs_human_input) {
+                                        renderHumanGatePrompt(contentEl, eventData.human_gate, messageEl, thinkingChain);
+                                        if (!thinkingChain[plannerCount - 1]) {
+                                            thinkingChain[plannerCount - 1] = {};
+                                        }
+                                        thinkingChain[plannerCount - 1].iteration = eventData.iteration;
+                                        thinkingChain[plannerCount - 1].plan_rationale = planRationale;
+                                        thinkingChain[plannerCount - 1].eval_action = 'NEEDS_HUMAN_INPUT';
+                                        thinkingChain[plannerCount - 1].eval_thought = eventData.human_gate.reason || '';
+                                        break;
+                                    }
+
                                     const tasksHtml = eventData.tasks.map((t, idx) => 
                                         `<div class="task-item"><strong>Task ${idx + 1}:</strong> ${escapeHtml(t.target)}<br/><em>${escapeHtml(t.instruction)}</em></div>`
                                     ).join('');
@@ -537,6 +697,12 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                     thinkingChain[plannerCount - 1].iteration = eventData.iteration;
                                     thinkingChain[plannerCount - 1].plan_rationale = planRationale;
                                     
+                                    break;
+
+                                case 'human_gate_interrupt':
+                                    if (eventData.human_gate && eventData.human_gate.needs_human_input && !activeHumanGate) {
+                                        renderHumanGatePrompt(contentEl, eventData.human_gate, messageEl, thinkingChain);
+                                    }
                                     break;
 
                                 case 'dispatcher_progress':
@@ -600,7 +766,8 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                     const actionEmoji = {
                                         'PASS': '✅',
                                         'PARTIAL_ACCEPT': '⚠️',
-                                        'NEEDS_REVISION': '🔄'
+                                        'NEEDS_REVISION': '🔄',
+                                        'NEEDS_HUMAN_INPUT': '✋'
                                     }[eventData.action] || '❓';
                                     
                                     contentEl.innerHTML = `
@@ -654,6 +821,9 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                     evalAction = eventData.eval_action || evalAction;
                                     totalIterations = eventData.total_iterations || totalIterations;
                                     agentResults = eventData.agent_results || agentResults;
+                                    if (eventData.human_gate && eventData.human_gate.needs_human_input) {
+                                        renderHumanGatePrompt(contentEl, eventData.human_gate, messageEl, thinkingChain);
+                                    }
                                     if (eventData.thinking_chain && eventData.thinking_chain.length > 0) {
                                         thinkingChain = eventData.thinking_chain;
                                     }
@@ -678,7 +848,11 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
 
                                     // 如果内容已通过 token 流式推送，不重复覆盖 DOM
                                     if (!eventData.streamed) {
-                                        contentEl.innerHTML = formatMarkdown(finalAnswer);
+                                        if (eventData.human_gate && eventData.human_gate.needs_human_input) {
+                                            renderHumanGatePrompt(contentEl, eventData.human_gate, messageEl, thinkingChain);
+                                        } else {
+                                            contentEl.innerHTML = formatMarkdown(finalAnswer);
+                                        }
                                         if (Object.keys(agentResults).length > 0 || planRationale || evalAction) {
                                             buildProcessDetails(detailsEl, thinkingChain, totalIterations, agentNameMap);
                                         }
@@ -821,7 +995,7 @@ function buildProcessDetails(detailsEl, thinkingChain, totalIterations, agentNam
                 }
             }
             if (item.eval_action) {
-                const emoji = { PASS: '✅', PARTIAL_ACCEPT: '⚠️', NEEDS_REVISION: '🔄' }[item.eval_action] || '❓';
+                const emoji = { PASS: '✅', PARTIAL_ACCEPT: '⚠️', NEEDS_REVISION: '🔄', NEEDS_HUMAN_INPUT: '✋' }[item.eval_action] || '❓';
                 html += `<div class="process-item"><div class="process-label">🎯 评估决策</div>${emoji} ${escapeHtml(item.eval_action)}</div>`;
             }
             if (item.eval_thought) {
@@ -891,7 +1065,7 @@ function appendAgentMessage(text, result) {
                 html += `<div class="process-item"><div class="process-label">🧠 规划思路</div>${escapeHtml(item.plan_rationale)}</div>`;
             }
             if (item.eval_action) {
-                const emoji = { PASS: '✅', PARTIAL_ACCEPT: '⚠️', NEEDS_REVISION: '🔄' }[item.eval_action] || '❓';
+                const emoji = { PASS: '✅', PARTIAL_ACCEPT: '⚠️', NEEDS_REVISION: '🔄', NEEDS_HUMAN_INPUT: '✋' }[item.eval_action] || '❓';
                 html += `<div class="process-item"><div class="process-label">🎯 评估决策</div>${emoji} ${escapeHtml(item.eval_action)}</div>`;
             }
             if (item.eval_thought) {
@@ -1168,7 +1342,7 @@ function appendThinkingToBubble(bubble, thinking_chain) {
             }
         }
         if (item.eval_action) {
-            const emoji = { PASS: '✅', PARTIAL_ACCEPT: '⚠️', NEEDS_REVISION: '🔄' }[item.eval_action] || '❓';
+            const emoji = { PASS: '✅', PARTIAL_ACCEPT: '⚠️', NEEDS_REVISION: '🔄', NEEDS_HUMAN_INPUT: '✋' }[item.eval_action] || '❓';
             html += `<div class="process-item"><div class="process-label">🎯 Action</div>${emoji} ${escapeHtml(item.eval_action)}</div>`;
         }
         if (item.eval_thought) {

@@ -12,6 +12,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from orchestrator.state import OrchestratorState
 from orchestrator.nodes.conversation_router import conversation_router_node
 from orchestrator.nodes.planner import planner_node
+from orchestrator.nodes.human_gate import human_gate_node
 from orchestrator.nodes.dispatcher import dispatcher_node
 from orchestrator.nodes.evaluator import evaluator_node, MAX_ITER
 from orchestrator.nodes.final_reply import final_reply_node
@@ -35,16 +36,29 @@ def route_after_planner(state: OrchestratorState) -> str:
     Planner 之后的条件路由。
 
     逻辑:
-    1. 存在任务 -> dispatcher
-    2. 无任务 (闲聊/直接回复) -> final_reply
+    1. Human gate 需要用户参与 -> human_gate interrupt
+    2. 存在任务 -> dispatcher
+    3. 无任务 (闲聊/直接回复) -> final_reply
     """
     plan_data = state.get("plan") or {}
+    human_gate = plan_data.get("human_gate") or {}
+    if human_gate.get("needs_human_input"):
+        logger.info("[Router] Planner human gate triggered, interrupting before execution")
+        return "human_gate"
+
     tasks = plan_data.get("tasks", [])
     if tasks:
         return "dispatcher"
 
     logger.info("[Router] Planner 未生成任务，直接转入 final_reply")
     return "final_reply"
+
+
+def route_after_human_gate(state: OrchestratorState) -> str:
+    """Route after user resumes the human gate."""
+    if state.get("eval_action") == "HUMAN_CANCELLED":
+        return "final_reply"
+    return "planner"
 
 
 def route_after_eval(state: OrchestratorState) -> str:
@@ -88,6 +102,7 @@ def build_graph(checkpointer=None) -> StateGraph:
     # ─── 注册节点 ───
     workflow.add_node("conversation_router", conversation_router_node)
     workflow.add_node("planner", planner_node)
+    workflow.add_node("human_gate", human_gate_node)
     workflow.add_node("dispatcher", dispatcher_node)
     workflow.add_node("evaluator", evaluator_node)
     workflow.add_node("final_reply", final_reply_node)
@@ -107,20 +122,27 @@ def build_graph(checkpointer=None) -> StateGraph:
     workflow.add_conditional_edges(
         "planner",
         route_after_planner,
-        ["dispatcher", "final_reply"]
+        ["human_gate", "dispatcher", "final_reply"]
     )
 
-    # 4. Dispatcher → Evaluator
+    # 4. Human_Gate → Planner 或 Final_Reply
+    workflow.add_conditional_edges(
+        "human_gate",
+        route_after_human_gate,
+        ["planner", "final_reply"]
+    )
+
+    # 5. Dispatcher → Evaluator
     workflow.add_edge("dispatcher", "evaluator")
 
-    # 5. Evaluator →(条件路由)→ final_reply 或 planner (反馈循环)
+    # 6. Evaluator →(条件路由)→ final_reply 或 planner (反馈循环)
     workflow.add_conditional_edges(
         "evaluator",
         route_after_eval,
         ["final_reply", "planner"]
     )
 
-    # 6. Final_Reply → END
+    # 7. Final_Reply → END
     workflow.add_edge("final_reply", END)
 
     # ─── 编译 ───

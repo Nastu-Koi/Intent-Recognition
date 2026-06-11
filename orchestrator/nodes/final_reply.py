@@ -62,6 +62,32 @@ def _messages_for_history(state: OrchestratorState) -> list:
     return _messages_with_current_once(state.get("messages", []), _display_query(state))
 
 
+def _format_human_gate_reply(human_gate: dict) -> str:
+    """Render a planner gate decision as a concise user-facing prompt."""
+    reason = str(human_gate.get("reason") or "继续执行前需要你确认一点信息。").strip()
+    questions = [
+        str(question).strip()
+        for question in (human_gate.get("questions") or [])
+        if str(question).strip()
+    ]
+    proposed_plan = [
+        str(step).strip()
+        for step in (human_gate.get("proposed_plan") or [])
+        if str(step).strip()
+    ]
+
+    lines = [reason]
+    if questions:
+        lines.append("")
+        lines.append("我需要你确认：")
+        lines.extend(f"{idx}. {question}" for idx, question in enumerate(questions, start=1))
+    if proposed_plan:
+        lines.append("")
+        lines.append("确认后我会按这个方向继续：")
+        lines.extend(f"{idx}. {step}" for idx, step in enumerate(proposed_plan, start=1))
+    return "\n".join(lines)
+
+
 async def final_reply_node(state: OrchestratorState) -> dict:
     """
     Final_Reply: 将 Sub Agents 结果综合成面向用户的自然语言回答。
@@ -69,10 +95,52 @@ async def final_reply_node(state: OrchestratorState) -> dict:
     - 如果有 Sub Agents 结果，综合多源信息并标注来源
     - 如果无 Sub Agents 结果 (闲聊)，直接根据对话历史回答
     """
-    llm = _get_reply_llm()
-
-    query = state.get("query", "")
     route = state.get("conversation_route") or {}
+    plan = state.get("plan") or {}
+    if state.get("eval_action") == "HUMAN_CANCELLED":
+        final_text = state.get("final_text") or "已取消这次计划，不会继续执行后续 Agent。"
+        updated_messages = _messages_for_history(state)
+        updated_messages.append(AIMessage(content=final_text))
+        return {
+            "final_text": final_text,
+            "streamed": False,
+            "messages": updated_messages,
+            "iterations": state.get("iter", 0),
+            "plan_rationale": plan.get("rationale", ""),
+            "eval_action": "HUMAN_CANCELLED",
+            "eval_thought": state.get("eval_thought", ""),
+            "agent_results": {},
+            "thinking_chain": state.get("thinking_chain", []),
+            "plan": plan,
+            "results": state.get("results", {}),
+            "feedback_history": state.get("feedback_history", []),
+            "conversation_route": route,
+            "iter": state.get("iter", 0),
+        }
+
+    human_gate = plan.get("human_gate") or {}
+    if human_gate.get("needs_human_input"):
+        final_text = _format_human_gate_reply(human_gate)
+        updated_messages = _messages_for_history(state)
+        updated_messages.append(AIMessage(content=final_text))
+
+        return {
+            "final_text": final_text,
+            "streamed": False,
+            "messages": updated_messages,
+            "iterations": state.get("iter", 0),
+            "plan_rationale": plan.get("rationale", ""),
+            "eval_action": "NEEDS_HUMAN_INPUT",
+            "eval_thought": human_gate.get("reason", ""),
+            "agent_results": {},
+            "thinking_chain": state.get("thinking_chain", []),
+            "plan": plan,
+            "results": state.get("results", {}),
+            "feedback_history": state.get("feedback_history", []),
+            "conversation_route": route,
+            "iter": state.get("iter", 0),
+        }
+
     if route.get("relation") == "ambiguous":
         final_text = (
             state.get("final_text")
@@ -85,6 +153,7 @@ async def final_reply_node(state: OrchestratorState) -> dict:
         
         return {
             "final_text": final_text,
+            "streamed": False,
             "messages": updated_messages,
             "iterations": state.get("iter", 0),
             "plan_rationale": "",
@@ -93,6 +162,8 @@ async def final_reply_node(state: OrchestratorState) -> dict:
             "agent_results": {},
             "thinking_chain": state.get("thinking_chain", []),
         }
+
+    llm = _get_reply_llm()
 
     results = state.get("results", {})
     file_ctx = state.get("file_ctx") or {}
@@ -188,6 +259,7 @@ async def final_reply_node(state: OrchestratorState) -> dict:
         thinking_chain = state.get("thinking_chain", [])
         result_dict = {
             "final_text": final_text,
+            "streamed": True,
             "messages": updated_messages,  # 保留完整历史而不是覆盖
             "thinking_chain": thinking_chain,
             "eval_action": state.get("eval_action", ""),
@@ -206,6 +278,7 @@ async def final_reply_node(state: OrchestratorState) -> dict:
         await emit_stream_progress("final_reply_done", {
             "total_iterations": result_dict["iterations"],
             "plan_rationale": result_dict["plan_rationale"],
+            "human_gate": (result_dict.get("plan") or {}).get("human_gate", {}),
             "eval_action": result_dict["eval_action"],
             "agent_results": {
                 k: str(v)
@@ -243,6 +316,7 @@ async def final_reply_node(state: OrchestratorState) -> dict:
         updated_messages.append(AIMessage(content=error_msg))
         return {
             "final_text": error_msg,
+            "streamed": False,
             "messages": updated_messages,
             "thinking_chain": state.get("thinking_chain", []),
             "eval_action": state.get("eval_action", ""),
