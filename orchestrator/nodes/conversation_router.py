@@ -113,6 +113,16 @@ def _previous_execution_context(state: OrchestratorState) -> str:
     return "\n\n".join(parts)
 
 
+def _has_current_upload(state: OrchestratorState) -> bool:
+    """Return True when this turn includes newly uploaded files."""
+    file_ctx = state.get("file_ctx") or {}
+    for category in ("images", "documents"):
+        for item in file_ctx.get(category) or []:
+            if isinstance(item, dict) and item.get("is_current_upload"):
+                return True
+    return False
+
+
 def _parse_router_json(text: str, current_query: str) -> ConversationRouteResult:
     clean = text.strip()
     if clean.startswith("```"):
@@ -152,6 +162,33 @@ async def conversation_router_node(state: OrchestratorState) -> dict:
     """
     query = state.get("query", "")
     messages = state.get("messages", [])
+
+    if _has_current_upload(state):
+        route = {
+            "relation": "not_related",
+            "related_type": "none",
+            "confidence": 1.0,
+            "rationale": "本轮包含新上传文件，按独立文件处理任务执行，避免继承上一轮上下文。",
+            "context_note": "这是基于本轮新上传文件的新任务，只使用当前用户输入和当前上传文件。",
+            "effective_query": query,
+            "original_query": query,
+            "standalone_query": query,
+            "clarification_question": "",
+        }
+        logger.info(
+            "[ConversationRouter] current upload detected; forcing not_related isolation"
+        )
+        return {
+            "conversation_route": route,
+            "query": query,
+            "results": {},
+            "_agent_outputs": {},
+            "feedback_history": [],
+            "eval_action": "",
+            "eval_thought": "",
+            "thinking_chain": [],
+            "human_gate_response": {},
+        }
     
     logger.info(f"[ConversationRouter] START: query={query[:80]} | total_messages={len(messages)}")
     for i, msg in enumerate(messages):

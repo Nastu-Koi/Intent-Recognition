@@ -29,6 +29,20 @@ def _get_evaluator_llm():
     return _EVALUATOR_LLM
 
 
+def _current_file_ctx_or_all(file_ctx: dict) -> dict:
+    """Use only current-turn uploads when present; otherwise keep all files."""
+    current: dict = {}
+    for category in ("images", "documents"):
+        items = [
+            item
+            for item in file_ctx.get(category) or []
+            if isinstance(item, dict) and item.get("is_current_upload")
+        ]
+        if items:
+            current[category] = items
+    return current or file_ctx
+
+
 async def evaluator_node(state: OrchestratorState) -> dict:
     """
     Evaluator: 评估 Sub Agents 执行结果，决定是否需要重新规划。
@@ -74,7 +88,7 @@ async def evaluator_node(state: OrchestratorState) -> dict:
         history_block = "（本轮为首次评估，无历史反馈）"
 
     # ─── 构建文件上下文 ───
-    file_ctx = state.get("file_ctx") or {}
+    file_ctx = _current_file_ctx_or_all(state.get("file_ctx") or {})
     file_summary = []
     if "images" in file_ctx and file_ctx["images"]:
         names = [f.get("file_name", "unknown") for f in file_ctx["images"]]

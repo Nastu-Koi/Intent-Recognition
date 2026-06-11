@@ -140,6 +140,15 @@ def _normalize_human_gate(raw_gate: dict | HumanGateDecision | None) -> dict:
     return normalized
 
 
+def _has_current_upload(file_ctx: dict) -> bool:
+    """Return True when file_ctx contains files uploaded in the current turn."""
+    for category in ("images", "documents"):
+        for item in file_ctx.get(category) or []:
+            if isinstance(item, dict) and item.get("is_current_upload"):
+                return True
+    return False
+
+
 async def planner_node(state: OrchestratorState) -> dict:
     """
     Planner: 根据用户查询和上下文生成任务分发计划。
@@ -207,6 +216,7 @@ async def planner_node(state: OrchestratorState) -> dict:
         ]
         if current_items:
             current_file_ctx[category] = current_items
+    has_current_upload = _has_current_upload(file_ctx)
     file_ctx_for_prompt = current_file_ctx or file_ctx
     file_summary = []
     if "images" in file_ctx_for_prompt and file_ctx_for_prompt["images"]:
@@ -227,6 +237,8 @@ async def planner_node(state: OrchestratorState) -> dict:
     # not_related 必须作为真正的新话题处理，不能让上一轮 results/feedback/iter 污染 Planner。
     route = state.get("conversation_route") or {}
     relation = route.get("relation")
+    if has_current_upload:
+        relation = "not_related"
     context_note = route.get("context_note") or route.get("rationale") or ""
     effective_query = state.get("query", "")
 
@@ -234,7 +246,7 @@ async def planner_node(state: OrchestratorState) -> dict:
     human_gate_response = state.get("human_gate_response") or {}
     has_human_gate_response = bool(human_gate_response)
 
-    if relation == "not_related" and not has_human_gate_response:
+    if (relation == "not_related" or has_current_upload) and not has_human_gate_response:
         current_iter = 0
         feedback_history = []
     else:
@@ -255,7 +267,7 @@ async def planner_node(state: OrchestratorState) -> dict:
         iteration_ctx = "\n### 首次规划\n这是第一轮任务分发，请全面分析用户需求。\n"
 
     # ─── 构建前一轮结果上下文 ───
-    prev_results = {} if relation == "not_related" else state.get("results", {})
+    prev_results = {} if relation == "not_related" or has_current_upload else state.get("results", {})
     if prev_results:
         results_block = "\n".join(
             [f"  - {k}: {str(v)[:4000]}" for k, v in prev_results.items()]
@@ -304,6 +316,7 @@ async def planner_node(state: OrchestratorState) -> dict:
             "4. **文件处理**: 如果用户上传了图片或文档，直接将文件处理任务分配给具有相应工具能力的 Agent（如 `general_chat`），该 Agent 内部会自动完成文件上传和处理，无需额外的上传步骤。\n"
             "5. **直接回复 (General Chat)**: 对于通用问题、日常对话、图片识别、文档总结等任务，调度 `general_chat` Agent。对于完全不涉及任何 Agent 能力范围的极简问题，可以不调度任何 Agent，由 Final Responder 直接回答。\n"
             "6. **背景注入**: 如果指派的任务依赖之前的结果，必须在指令中包含【背景参考】。\n"
+            "   如果本轮有新上传文件，必须作为独立文件任务处理，禁止引用上一轮对话、上一轮文件或上一轮 Agent 结果。\n"
             f"7. **合法 target**: target 字段只能使用以下 agent_id: {valid_agent_ids}\n"
             "8. **上下文纠正优先**: 如果 Conversation Router 标记 related_type=correction，"
             "且用户是在纠正上一轮的 Agent/工具选择（例如“用某助手回答”“不要用某助手”），"
@@ -375,7 +388,7 @@ async def planner_node(state: OrchestratorState) -> dict:
     if relation == "related":
         logger.info(f"[Planner] context_note: {context_note[:100]}")
     
-    if relation == "related":
+    if relation == "related" and not has_current_upload:
         system_msg.content += (
             "\n\n### Conversation Router / Context Mutation Layer\n"
             f"- relation: related\n"
@@ -392,10 +405,16 @@ async def planner_node(state: OrchestratorState) -> dict:
             "- relation: not_related\n"
             "当前输入开启新对话。规划时只使用当前用户输入和当前可用文件，不要继承上一轮任务目标或 Agent 结果。\n"
         )
+    if has_current_upload:
+        system_msg.content += (
+            "\n\n### 当前上传文件隔离规则\n"
+            "本轮检测到新上传文件。生成任务时只能围绕本轮用户输入和本轮新上传文件，"
+            "不要把历史对话、历史文件、历史 Agent 输出作为合同/文档内容或分析依据。\n"
+        )
 
     # related 保留完整历史；not_related 只保留当前轮，避免旧上下文污染新对话
     all_messages = state.get("messages", [])
-    if relation == "not_related" and not human_gate_response:
+    if (relation == "not_related" or has_current_upload) and not human_gate_response:
         messages = [HumanMessage(content=state.get("query", ""))]
     else:
         messages = all_messages
@@ -503,7 +522,7 @@ async def planner_node(state: OrchestratorState) -> dict:
         }
         if human_gate_response:
             update["human_gate_response"] = {}
-        if relation == "not_related":
+        if relation == "not_related" or has_current_upload:
             update.update(
                 {
                     "results": {},

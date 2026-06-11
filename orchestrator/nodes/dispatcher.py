@@ -19,6 +19,16 @@ from engine.streaming import emit_stream_progress
 logger = get_logger(__name__)
 
 
+def _has_current_upload(file_ctx: Dict[str, Any] | None) -> bool:
+    """Return True when this turn has newly uploaded files."""
+    file_ctx = file_ctx or {}
+    for category in ("images", "documents"):
+        for item in file_ctx.get(category) or []:
+            if isinstance(item, dict) and item.get("is_current_upload"):
+                return True
+    return False
+
+
 async def _a2a_send_message(
     agent_info: Dict[str, Any],
     instruction: str,
@@ -170,8 +180,9 @@ async def dispatcher_node(state: OrchestratorState) -> dict:
     query = state.get("query", "")
     available_agents = state.get("available_agents", [])
     file_ctx = state.get("file_ctx")
-    current_results = state.get("results") or {}
-    current_structured = state.get("_agent_outputs") or {}
+    isolate_current_upload = _has_current_upload(file_ctx)
+    current_results = {} if isolate_current_upload else state.get("results") or {}
+    current_structured = {} if isolate_current_upload else state.get("_agent_outputs") or {}
     conversation_id = state.get("conversation_id", "")
     skill_context = state.get("skill_context")
 

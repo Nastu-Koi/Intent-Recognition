@@ -65,6 +65,20 @@ def _messages_for_history(state: OrchestratorState) -> list:
     return _messages_with_current_once(state.get("messages", []), _display_query(state))
 
 
+def _current_file_ctx_or_all(file_ctx: dict) -> dict:
+    """Use current-turn uploads only when they exist."""
+    current: dict = {}
+    for category in ("images", "documents"):
+        items = [
+            item
+            for item in file_ctx.get(category) or []
+            if isinstance(item, dict) and item.get("is_current_upload")
+        ]
+        if items:
+            current[category] = items
+    return current or file_ctx
+
+
 def _format_human_gate_reply(human_gate: dict) -> str:
     """Render a planner gate decision as a concise user-facing prompt."""
     reason = str(human_gate.get("reason") or "继续执行前需要你确认一点信息。").strip()
@@ -169,7 +183,7 @@ async def final_reply_node(state: OrchestratorState) -> dict:
     llm = _get_reply_llm()
 
     results = state.get("results", {})
-    file_ctx = state.get("file_ctx") or {}
+    file_ctx = _current_file_ctx_or_all(state.get("file_ctx") or {})
     file_summary = []
     for category, label in (("images", "图片"), ("documents", "文档")):
         for f in file_ctx.get(category, []) or []:
