@@ -9,6 +9,7 @@ let selectedSkill = null;
 let currentStreamingController = null; // For stopping stream generation
 let isGenerating = false; // Track generation state
 let activeHumanGate = null;
+let activeEvalArbitration = null;
 const AGENT_DISPLAY_NAMES = {
     expense_assistant: '报销助手',
     general_chat: '通用对话助手',
@@ -213,14 +214,20 @@ async function sendHumanGateResume(action, message) {
 }
 
 function dismissActiveHumanGate() {
-    if (!activeHumanGate) return;
-    if (activeHumanGate.panel && activeHumanGate.panel.isConnected) {
+    if (activeHumanGate && activeHumanGate.panel && activeHumanGate.panel.isConnected) {
         activeHumanGate.panel.querySelectorAll('button, textarea').forEach(el => {
             el.disabled = true;
         });
         activeHumanGate.panel.classList.add('resolved');
     }
     activeHumanGate = null;
+    if (activeEvalArbitration && activeEvalArbitration.panel && activeEvalArbitration.panel.isConnected) {
+        activeEvalArbitration.panel.querySelectorAll('button, textarea').forEach(el => {
+            el.disabled = true;
+        });
+        activeEvalArbitration.panel.classList.add('resolved');
+    }
+    activeEvalArbitration = null;
 }
 
 // ─── Stop Generation ───
@@ -579,6 +586,110 @@ function renderFinalEvalPanel(messageEl) {
     };
 }
 
+async function sendEvalArbitrationResume(action, message = '') {
+    if (!activeEvalArbitration || !sessionId || isGenerating) return;
+
+    const context = activeEvalArbitration;
+    const status = context.panel.querySelector('.eval-arbitration-status');
+    if (status) status.textContent = '已收到，正在继续处理...';
+    context.panel.querySelectorAll('button, textarea').forEach(el => { el.disabled = true; });
+    context.panel.classList.add('resolved');
+    activeEvalArbitration = null;
+
+    currentStreamingController = new AbortController();
+    isGenerating = true;
+    updateSendButtonState();
+    chatInput.disabled = true;
+    uploadBtn.disabled = true;
+
+    try {
+        const response = await fetch(`${API_BASE}/chat-resume-stream`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session_id: sessionId,
+                action,
+                message,
+            }),
+            signal: currentStreamingController.signal,
+        });
+        await processStreamResponse(response, context.messageEl, context.thinkingChain);
+    } catch (e) {
+        if (e.name !== 'AbortError') {
+            appendMessage('agent', `❌ 仲裁继续执行失败: ${e.message}`);
+        }
+    } finally {
+        isGenerating = false;
+        currentStreamingController = null;
+        updateSendButtonState();
+        chatInput.disabled = false;
+        uploadBtn.disabled = false;
+        chatInput.focus();
+    }
+}
+
+function renderEvalArbitrationPrompt(container, arbitration, messageEl = null, thinkingChain = []) {
+    if (!container || !arbitration || !arbitration.needs_human_arbitration) return;
+
+    const confidence = typeof arbitration.confidence === 'number'
+        ? `${Math.round(arbitration.confidence * 100)}%`
+        : '';
+    const proposedAction = arbitration.proposed_action || '';
+    const reason = arbitration.reason || 'Evaluator 对当前评估结论置信度较低，需要你仲裁是否采纳。';
+    const thought = arbitration.thought || '';
+    const feedback = arbitration.feedback || '';
+
+    container.innerHTML = `
+        <div class="eval-arbitration-panel">
+            <div class="eval-arbitration-header">
+                <div class="eval-arbitration-title">需要人工仲裁</div>
+                ${confidence ? `<div class="eval-arbitration-confidence">置信度 ${escapeHtml(confidence)}</div>` : ''}
+            </div>
+            <div class="eval-arbitration-reason">${escapeHtml(reason)}</div>
+            <div class="eval-arbitration-section">
+                <div class="eval-arbitration-label">评估结论</div>
+                <div>${escapeHtml(proposedAction || 'UNKNOWN')}</div>
+            </div>
+            ${thought ? `<div class="eval-arbitration-section"><div class="eval-arbitration-label">评估分析</div><div>${escapeHtml(thought)}</div></div>` : ''}
+            ${feedback ? `<div class="eval-arbitration-section"><div class="eval-arbitration-label">建议反馈</div><div>${escapeHtml(feedback)}</div></div>` : ''}
+            <div class="eval-arbitration-actions">
+                <button type="button" class="eval-arbitration-btn primary" data-action="accept_evaluation">采纳评估</button>
+                <button type="button" class="eval-arbitration-btn" data-action="force_final">直接出答案</button>
+            </div>
+            <div class="eval-arbitration-supplement">
+                <textarea class="eval-arbitration-textarea" rows="2" placeholder="补充你的仲裁意见...（可选）"></textarea>
+                <button type="button" class="eval-arbitration-btn secondary" data-action="override_with_feedback">提交意见</button>
+            </div>
+            <div class="eval-arbitration-status" aria-live="polite"></div>
+        </div>
+    `;
+
+    const panel = container.querySelector('.eval-arbitration-panel');
+    const textarea = panel.querySelector('.eval-arbitration-textarea');
+    activeEvalArbitration = { arbitration, panel, messageEl, thinkingChain };
+
+    panel.querySelector('[data-action="accept_evaluation"]').onclick = () => {
+        sendEvalArbitrationResume('accept_evaluation', '采纳 Evaluator 的评估结论。');
+    };
+    panel.querySelector('[data-action="force_final"]').onclick = () => {
+        sendEvalArbitrationResume('force_final', '不继续修正，直接输出当前答案。');
+    };
+    panel.querySelector('[data-action="override_with_feedback"]').onclick = () => {
+        const supplement = textarea.value.trim();
+        if (!supplement) {
+            textarea.focus();
+            return;
+        }
+        sendEvalArbitrationResume('override_with_feedback', supplement);
+    };
+    textarea.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            panel.querySelector('[data-action="override_with_feedback"]').click();
+        }
+    });
+}
+
 function renderHumanGatePrompt(container, humanGate, messageEl = null, thinkingChain = []) {
     if (!container || !humanGate || !humanGate.needs_human_input) return;
 
@@ -808,6 +919,12 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                     }
                                     break;
 
+                                case 'eval_arbitration_interrupt':
+                                    if (eventData.eval_arbitration && eventData.eval_arbitration.needs_human_arbitration && !activeEvalArbitration) {
+                                        renderEvalArbitrationPrompt(contentEl, eventData.eval_arbitration, messageEl, thinkingChain);
+                                    }
+                                    break;
+
                                 case 'dispatcher_progress':
                                     const dispatcherProgress = ensureDispatcherProgress(contentEl);
                                     let progressSummary = dispatcherProgress.querySelector('.dispatcher-progress-summary');
@@ -866,6 +983,14 @@ async function processStreamResponse(response, messageEl, thinkingChain) {
                                 case 'evaluator':
                                     evalAction = eventData.action;
                                     evalThought = eventData.thought;
+                                    if (eventData.eval_arbitration && eventData.eval_arbitration.needs_human_arbitration) {
+                                        renderEvalArbitrationPrompt(contentEl, eventData.eval_arbitration, messageEl, thinkingChain);
+                                        if (thinkingChain[plannerCount - 1]) {
+                                            thinkingChain[plannerCount - 1].eval_action = evalAction;
+                                            thinkingChain[plannerCount - 1].eval_thought = evalThought;
+                                        }
+                                        break;
+                                    }
                                     const actionEmoji = {
                                         'PASS': '✅',
                                         'PARTIAL_ACCEPT': '⚠️',

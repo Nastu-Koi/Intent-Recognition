@@ -15,6 +15,7 @@ from orchestrator.nodes.planner import planner_node
 from orchestrator.nodes.human_gate import human_gate_node
 from orchestrator.nodes.dispatcher import dispatcher_node
 from orchestrator.nodes.evaluator import evaluator_node, MAX_ITER
+from orchestrator.nodes.eval_arbitration import eval_arbitration_node
 from orchestrator.nodes.final_reply import final_reply_node
 from engine.logging_config import get_logger
 
@@ -80,6 +81,11 @@ def route_after_eval(state: OrchestratorState) -> str:
         )
         return "final_reply"
 
+    arbitration = state.get("eval_arbitration") or {}
+    if arbitration.get("needs_human_arbitration"):
+        logger.info("[Router] Evaluator 低置信度，进入人工仲裁")
+        return "eval_arbitration"
+
     if action in ("PASS", "PARTIAL_ACCEPT"):
         logger.info(f"[Router] Evaluator 放行: action={action}")
         return "final_reply"
@@ -95,6 +101,17 @@ def route_after_eval(state: OrchestratorState) -> str:
     return "final_reply"
 
 
+def route_after_eval_arbitration(state: OrchestratorState) -> str:
+    """Route after human arbitration of an evaluator decision."""
+    action = state.get("eval_action", "PASS")
+    current_iter = state.get("iter", 1)
+    if action == "NEEDS_REVISION" and current_iter < MAX_ITER:
+        logger.info("[Router] 用户仲裁要求重新规划")
+        return "planner"
+    logger.info("[Router] 用户仲裁后直接出答案")
+    return "final_reply"
+
+
 def build_graph(checkpointer=None) -> StateGraph:
     """构建并编译 Planner-Evaluator 工作流图。"""
     workflow = StateGraph(OrchestratorState)
@@ -105,6 +122,7 @@ def build_graph(checkpointer=None) -> StateGraph:
     workflow.add_node("human_gate", human_gate_node)
     workflow.add_node("dispatcher", dispatcher_node)
     workflow.add_node("evaluator", evaluator_node)
+    workflow.add_node("eval_arbitration", eval_arbitration_node)
     workflow.add_node("final_reply", final_reply_node)
 
     # ─── 编排边 ───
@@ -135,14 +153,21 @@ def build_graph(checkpointer=None) -> StateGraph:
     # 5. Dispatcher → Evaluator
     workflow.add_edge("dispatcher", "evaluator")
 
-    # 6. Evaluator →(条件路由)→ final_reply 或 planner (反馈循环)
+    # 6. Evaluator →(条件路由)→ final_reply、planner 或人工仲裁
     workflow.add_conditional_edges(
         "evaluator",
         route_after_eval,
+        ["eval_arbitration", "final_reply", "planner"]
+    )
+
+    # 7. Eval_Arbitration → final_reply 或 planner
+    workflow.add_conditional_edges(
+        "eval_arbitration",
+        route_after_eval_arbitration,
         ["final_reply", "planner"]
     )
 
-    # 7. Final_Reply → END
+    # 8. Final_Reply → END
     workflow.add_edge("final_reply", END)
 
     # ─── 编译 ───

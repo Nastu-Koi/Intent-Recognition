@@ -918,7 +918,8 @@ body {
     border-left-color: var(--text-muted);
 }
 
-.human-gate-panel {
+.human-gate-panel,
+.eval-arbitration-panel {
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -930,24 +931,28 @@ body {
     min-width: min(520px, 72vw);
 }
 
-.human-gate-panel.resolved {
+.human-gate-panel.resolved,
+.eval-arbitration-panel.resolved {
     opacity: 0.72;
 }
 
-.human-gate-header {
+.human-gate-header,
+.eval-arbitration-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
     gap: 12px;
 }
 
-.human-gate-title {
+.human-gate-title,
+.eval-arbitration-title {
     color: var(--text-primary);
     font-size: 14px;
     font-weight: 600;
 }
 
-.human-gate-confidence {
+.human-gate-confidence,
+.eval-arbitration-confidence {
     color: var(--warning);
     font-size: 11px;
     padding: 2px 7px;
@@ -957,13 +962,16 @@ body {
 }
 
 .human-gate-reason,
-.human-gate-list {
+.human-gate-list,
+.eval-arbitration-reason,
+.eval-arbitration-section {
     color: var(--text-secondary);
     font-size: 13px;
     line-height: 1.55;
 }
 
-.human-gate-label {
+.human-gate-label,
+.eval-arbitration-label {
     color: var(--accent-secondary);
     font-size: 11px;
     font-weight: 600;
@@ -980,16 +988,20 @@ body {
 }
 
 .human-gate-actions,
-.human-gate-supplement {
+.human-gate-supplement,
+.eval-arbitration-actions,
+.eval-arbitration-supplement {
     display: flex;
     gap: 8px;
 }
 
-.human-gate-actions {
+.human-gate-actions,
+.eval-arbitration-actions {
     flex-wrap: wrap;
 }
 
-.human-gate-btn {
+.human-gate-btn,
+.eval-arbitration-btn {
     min-height: 34px;
     padding: 7px 12px;
     border: 1px solid var(--border-subtle);
@@ -1002,28 +1014,33 @@ body {
     transition: var(--transition);
 }
 
-.human-gate-btn:hover:not(:disabled) {
+.human-gate-btn:hover:not(:disabled),
+.eval-arbitration-btn:hover:not(:disabled) {
     color: var(--text-primary);
     border-color: var(--border-active);
     background: var(--bg-tertiary);
 }
 
-.human-gate-btn.primary {
+.human-gate-btn.primary,
+.eval-arbitration-btn.primary {
     background: var(--user-bubble);
     color: #fff;
     border: none;
 }
 
-.human-gate-btn.secondary {
+.human-gate-btn.secondary,
+.eval-arbitration-btn.secondary {
     color: var(--accent-secondary);
 }
 
-.human-gate-btn:disabled {
+.human-gate-btn:disabled,
+.eval-arbitration-btn:disabled {
     cursor: not-allowed;
     opacity: 0.55;
 }
 
-.human-gate-textarea {
+.human-gate-textarea,
+.eval-arbitration-textarea {
     flex: 1;
     min-height: 38px;
     max-height: 96px;
@@ -1039,12 +1056,14 @@ body {
     line-height: 1.45;
 }
 
-.human-gate-textarea:focus {
+.human-gate-textarea:focus,
+.eval-arbitration-textarea:focus {
     border-color: var(--border-active);
     box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
-.human-gate-status {
+.human-gate-status,
+.eval-arbitration-status {
     min-height: 16px;
     color: var(--text-muted);
     font-size: 12px;
@@ -1371,11 +1390,14 @@ body {
     .quick-actions { flex-direction: column; align-items: center; }
     .human-gate-panel { min-width: 0; width: 100%; }
     .human-gate-header,
-    .human-gate-supplement {
+    .human-gate-supplement,
+    .eval-arbitration-header,
+    .eval-arbitration-supplement {
         align-items: stretch;
         flex-direction: column;
     }
     .human-gate-btn,
+    .eval-arbitration-btn,
     .final-eval-btn { width: 100%; }
     .final-eval-input { flex-direction: column; }
     .final-eval-textarea { min-width: 0; width: 100%; }

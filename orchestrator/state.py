@@ -131,6 +131,20 @@ class EvalResult(BaseModel):
         default="",
         description="具体修改意见。仅当 action=NEEDS_REVISION 时有意义，将追加到 feedback_history。"
     )
+    confidence: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Evaluator 对当前评估决策的置信度，0 到 1。"
+    )
+    needs_human_arbitration: bool = Field(
+        default=False,
+        description="是否需要用户对低置信度评估进行人工仲裁。"
+    )
+    arbitration_reason: str = Field(
+        default="",
+        description="触发人工仲裁的简要原因。"
+    )
 
 
 class ConversationRouteResult(BaseModel):
@@ -212,3 +226,5 @@ class OrchestratorState(MessagesState):
     thinking_chain: List[Dict[str, Any]]                        # 完整思维链历史
     conversation_route: Dict[str, Any]                           # Conversation Router 打标结果
     human_gate_response: Dict[str, Any]                          # 用户对 Planner human gate 的 resume 响应
+    eval_confidence: float                                       # Evaluator 对当前评估决策的置信度
+    eval_arbitration: Dict[str, Any]                             # Evaluator 低置信度人工仲裁状态

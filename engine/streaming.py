@@ -61,7 +61,7 @@ async def _yield_graph_event(
                 interrupt_value = getattr(first_interrupt, "value", {}) or {}
                 interrupt_id = getattr(first_interrupt, "id", "") or ""
             yield StreamEvent(
-                "human_gate_interrupt",
+                "human_gate_interrupt" if interrupt_value.get("type") == "human_gate" else "eval_arbitration_interrupt",
                 {
                     "interrupt_id": interrupt_id,
                     **(interrupt_value if isinstance(interrupt_value, dict) else {"value": interrupt_value}),
@@ -134,12 +134,15 @@ async def _yield_graph_event(
             eval_action = node_output.get("eval_action", "")
             eval_thought = node_output.get("eval_thought", "")
             current_iter = node_output.get("iter", 0)
+            eval_arbitration = node_output.get("eval_arbitration", {})
 
             yield StreamEvent(
                 "evaluator",
                 {
                     "action": eval_action,
                     "thought": eval_thought[:300] if eval_thought else "",
+                    "confidence": node_output.get("eval_confidence", 1.0),
+                    "eval_arbitration": eval_arbitration,
                     "iteration": current_iter,
                     "max_iterations": 5,
                 }

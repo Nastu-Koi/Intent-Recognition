@@ -123,6 +123,9 @@ async def evaluator_node(state: OrchestratorState) -> dict:
             "   - PARTIAL_ACCEPT: 核心任务已完成，或由于能力限制无法通过简单修正获得更好结果。\n"
             "   - NEEDS_REVISION: 存在实质性错误或遗漏，且修改建议与历史不重复。\n\n"
             "5. **feedback 字段**: 仅在 NEEDS_REVISION 时填写具体的修改建议。PASS 和 PARTIAL_ACCEPT 时留空。\n"
+            "6. **人工仲裁判断**: 你必须填写 confidence、needs_human_arbitration 和 arbitration_reason。"
+            "仅当评估置信度低于 0.65，或你准备给出 NEEDS_REVISION 但反馈不够确定，或 Agent 结果冲突/接近熔断时，"
+            "将 needs_human_arbitration 设为 true。普通高置信度 PASS 不需要人工仲裁。\n"
         )
     )
 
@@ -143,7 +146,7 @@ async def evaluator_node(state: OrchestratorState) -> dict:
                     HumanMessage(
                         content=(
                             "请根据对话历史与已累积的执行结果，评估整体任务是否已完成。\n"
-                            "输出 JSON: {\"thought\": \"...\", \"action\": \"PASS|PARTIAL_ACCEPT|NEEDS_REVISION\", \"feedback\": \"...\"}"
+                            "输出 JSON: {\"thought\": \"...\", \"action\": \"PASS|PARTIAL_ACCEPT|NEEDS_REVISION\", \"feedback\": \"...\", \"confidence\": 0.0, \"needs_human_arbitration\": false, \"arbitration_reason\": \"...\"}"
                         )
                     )
                 ]
@@ -166,18 +169,38 @@ async def evaluator_node(state: OrchestratorState) -> dict:
             eval_result = EvalResult(
                 thought=raw.get("thought", ""),
                 action=raw.get("action", "PASS"),
-                feedback=raw.get("feedback", "")
+                feedback=raw.get("feedback", ""),
+                confidence=raw.get("confidence", 1.0),
+                needs_human_arbitration=raw.get("needs_human_arbitration", False),
+                arbitration_reason=raw.get("arbitration_reason", ""),
             )
 
+        should_arbitrate = bool(eval_result.needs_human_arbitration) or (
+            eval_result.confidence < 0.65
+            and eval_result.action in {"PARTIAL_ACCEPT", "NEEDS_REVISION"}
+        )
+        arbitration_reason = eval_result.arbitration_reason or (
+            "Evaluator 对当前评估结论置信度较低。" if should_arbitrate else ""
+        )
+
         logger.info(
-            f"[Evaluator] Action={eval_result.action} | "
-            f"Thought={eval_result.thought[:100]}... | "
+            f"[Evaluator] Action={eval_result.action} | Confidence={eval_result.confidence:.2f} | "
+            f"Arbitrate={should_arbitrate} | Thought={eval_result.thought[:100]}... | "
             f"Iter={current_iter}/{MAX_ITER}"
         )
 
         update = {
             "eval_action": eval_result.action,
             "eval_thought": eval_result.thought,
+            "eval_confidence": eval_result.confidence,
+            "eval_arbitration": {
+                "needs_human_arbitration": should_arbitrate,
+                "reason": arbitration_reason,
+                "proposed_action": eval_result.action,
+                "feedback": eval_result.feedback,
+                "thought": eval_result.thought,
+                "confidence": eval_result.confidence,
+            },
             "iter": current_iter,
         }
 
