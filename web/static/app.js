@@ -174,9 +174,6 @@ async function sendHumanGateResume(action, message) {
     if (status) {
         status.textContent = '已收到，正在基于当前计划继续处理...';
     }
-    if (action === 'supplement' && message.trim()) {
-        appendMessage('user', message.trim());
-    }
     gateContext.panel.querySelectorAll('button, textarea').forEach(el => {
         el.disabled = true;
     });
