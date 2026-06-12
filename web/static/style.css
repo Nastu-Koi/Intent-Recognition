@@ -873,38 +873,6 @@ body {
     50% { opacity: 0.7; }
 }
 
-/* ─── Human Feedback Prompt ─── */
-.feedback-prompt {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 12px;
-    margin-top: 12px;
-    background: rgba(59, 130, 246, 0.1);
-    border: 1px solid rgba(59, 130, 246, 0.3);
-    border-radius: var(--radius-md);
-}
-
-.feedback-icon {
-    font-size: 20px;
-    flex-shrink: 0;
-}
-
-.feedback-text {
-    font-size: 13px;
-    color: var(--text-secondary);
-}
-
-.feedback-text strong {
-    color: var(--text-primary);
-    display: block;
-    margin-bottom: 4px;
-}
-
-.feedback-text p {
-    margin: 0;
-}
-
 .feedback-eval {
     padding: 12px;
     margin: 8px 0;

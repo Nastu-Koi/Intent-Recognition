@@ -11,9 +11,11 @@ General Chat 工具集 — 图像识别与文档总结。
 
 import os
 import time
+import zipfile
 from io import BytesIO
 from pathlib import Path
 from typing import List
+from xml.etree import ElementTree
 
 import requests
 from langchain_core.tools import tool
@@ -73,6 +75,7 @@ def _guess_mime(path: Path) -> str:
 
 # 统一的 Dify 用户标识 (上传与调用必须一致)
 DIFY_USER = os.getenv("DIFY_USER", "intent-recognition")
+MAX_LOCAL_TEXT_CHARS = int(os.getenv("DOC_SUMMARY_LOCAL_TEXT_LIMIT", "50000"))
 
 
 def _upload_file_to_dify(file_path: str, api_key: str = "") -> str:
@@ -115,6 +118,75 @@ def _upload_file_to_dify(file_path: str, api_key: str = "") -> str:
     file_id = result.get("id") or result.get("file_id", "")
     logger.info(f"[Tools] 文件上传成功: {path.name} -> file_id={file_id}")
     return file_id
+
+
+def _extract_docx_text(path: Path) -> str:
+    """Extract plain text from a .docx file using the standard library."""
+    with zipfile.ZipFile(path) as archive:
+        xml_bytes = archive.read("word/document.xml")
+    root = ElementTree.fromstring(xml_bytes)
+    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+    paragraphs = []
+    for paragraph in root.findall(".//w:p", namespace):
+        text = "".join(
+            node.text or ""
+            for node in paragraph.findall(".//w:t", namespace)
+        ).strip()
+        if text:
+            paragraphs.append(text)
+    return "\n".join(paragraphs)
+
+
+def _extract_pdf_text(path: Path) -> str:
+    """Extract plain text from a PDF when pypdf is available."""
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return ""
+
+    reader = PdfReader(str(path))
+    page_text = []
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        if text.strip():
+            page_text.append(text.strip())
+    return "\n\n".join(page_text)
+
+
+def _extract_local_document_text(file_path: str) -> str:
+    """Best-effort local extraction so workflow inputs contain verifiable text."""
+    path = Path(file_path)
+    ext = path.suffix.lower()
+    try:
+        if ext == ".docx":
+            text = _extract_docx_text(path)
+        elif ext == ".pdf":
+            text = _extract_pdf_text(path)
+        elif ext in {".txt", ".md", ".csv"}:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        else:
+            text = ""
+    except Exception as e:
+        logger.warning("[Tools] 本地文档文本提取失败: %s | %s", path.name, e)
+        return ""
+
+    text = text.strip()
+    if len(text) > MAX_LOCAL_TEXT_CHARS:
+        return text[:MAX_LOCAL_TEXT_CHARS] + "\n\n[内容过长，已截断]"
+    return text
+
+
+def _build_doc_summary_input(instruction: str, document_text: str = "") -> str:
+    if not document_text:
+        return instruction
+    return (
+        f"{instruction}\n\n"
+        "以下是从用户上传文档中提取的原文内容。回答必须基于这些原文；"
+        "如果原文没有相关信息，请明确说明未在文档中找到依据，不要补充或编造条款。\n\n"
+        "=== 文档原文开始 ===\n"
+        f"{document_text}\n"
+        "=== 文档原文结束 ==="
+    )
 
 
 # ──────────────────────────────────────────────
@@ -201,6 +273,7 @@ def _call_dify_doc_summary(
     file_ids: List[str],
     app_type: str = "chat",
     conversation_id: str = "",
+    document_text: str = "",
 ) -> str:
     """
     调用 Dify 文档总结 App。
@@ -235,9 +308,13 @@ def _call_dify_doc_summary(
 
     if app_type == "workflow":
         input_variable = os.getenv("DIFY_DOC_SUMMARY_INPUT_VARIABLE", "query")
+        file_variable = os.getenv("DIFY_DOC_SUMMARY_FILE_VARIABLE", "").strip()
         url = f"{_get_dify_base_url()}/workflows/run"
+        inputs = {input_variable: _build_doc_summary_input(query, document_text)}
+        if file_variable:
+            inputs[file_variable] = files_payload
         payload = {
-            "inputs": {input_variable: query},
+            "inputs": inputs,
             "response_mode": "blocking",
             "user": DIFY_USER,
             "files": files_payload,
@@ -257,7 +334,7 @@ def _call_dify_doc_summary(
         url = f"{_get_dify_base_url()}/chat-messages"
         payload = {
             "inputs": {},
-            "query": query,
+            "query": _build_doc_summary_input(query, document_text),
             "response_mode": "blocking",
             "conversation_id": conversation_id,
             "user": DIFY_USER,
@@ -343,6 +420,14 @@ def document_summary(file_path: str, instruction: str = "请总结这份文档�
         )
 
     try:
+        local_text = _extract_local_document_text(file_path)
+        if local_text:
+            logger.info(
+                "[Tool:document_summary] 本地提取文本成功: %s chars=%s",
+                Path(file_path).name,
+                len(local_text),
+            )
+
         # 获取目标 App 的 API Key（上传和调用必须使用同一个 key）
         doc_summary_api_key = _get_dify_api_key("DOC_SUMMARY")
 
@@ -355,6 +440,7 @@ def document_summary(file_path: str, instruction: str = "请总结这份文档�
             query=instruction,
             file_ids=[file_id],
             app_type=app_type,
+            document_text=local_text,
         )
 
         logger.info(f"[Tool:document_summary] 总结完成，结果长度={len(result)}")

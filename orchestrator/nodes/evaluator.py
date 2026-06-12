@@ -70,6 +70,22 @@ async def evaluator_node(state: OrchestratorState) -> dict:
         for agent in available_agents
         if isinstance(agent, dict) and agent.get("agent_id")
     }
+    if available_agents:
+        agent_catalog = "\n".join(
+            [
+                (
+                    f"  - `{agent.get('agent_id')}` ({agent.get('name', agent.get('agent_id'))}): "
+                    f"{agent.get('description', '')}\n"
+                    f"    skills={agent.get('skills', [])}; "
+                    f"keywords={agent.get('keywords', [])}; "
+                    f"scope={agent.get('scope', [])}"
+                )
+                for agent in available_agents
+                if isinstance(agent, dict) and agent.get("agent_id")
+            ]
+        )
+    else:
+        agent_catalog = "（无可用 Agent 能力清单）"
 
     # ─── 构建 Sub Agents 结果展示 ───
     if results:
@@ -122,22 +138,35 @@ async def evaluator_node(state: OrchestratorState) -> dict:
             "1. **对话历史 (Messages)**: 用户的原始意图与背景。\n"
             f"2. **当前环境文件**: {file_str}\n"
             f"3. **历史评估反馈**: \n{history_block}\n"
-            f"4. **Sub Agents 累积执行结果**: \n{results_block}\n\n"
+            f"4. **可用 Agent 能力清单**: \n{agent_catalog}\n"
+            f"5. **Sub Agents 累积执行结果**: \n{results_block}\n\n"
             f"{tolerance_note}"
 
             "### 评估规则 (严格遵守):\n"
-            "1. **整体目标达成判定**: 审查『Sub Agents 累积执行结果』。由于系统采用多轮迭代规划，之前的结果都在这个集合中。"
-            "只要全量结果集已经满足了用户问题的各个方面，就应判定为 PASS。\n"
-            "2. **闲聊与直接对话**: 如果 Planner 判定这是一个通用问题且**未调度任何任务**（累积执行结果为空），"
+            "1. **先做可靠性审查，再判断完成度**: 审查『Sub Agents 累积执行结果』时，不只看答案是否完整，"
+            "还要判断答案是否可信、是否由合适能力来源支持、是否存在未证实的具体政策/数字/条款/结论。\n"
+            "2. **能力边界核查**: 根据『可用 Agent 能力清单』和用户问题，判断已执行 Agent 是否具备回答该问题的能力。"
+            "如果结果来自能力不匹配的 Agent，或通用 Agent 越权给出了专业政策、财务、法务、医疗、安全等结论，"
+            "不要因为文字看起来完整就 PASS；应选择 NEEDS_REVISION，并要求 Planner 调度更合适的 Agent 或补充可靠证据。\n"
+            "3. **证据闭环核查**: 当答案声称来自上传文件、知识库、公司政策或外部系统时，检查结果是否说明了可核验依据。"
+            "如果 Sub Agent 给出了具体时限、金额、条款、处罚、流程等细节，但没有清楚表明这些信息来自文件内容、"
+            "专业知识库或合适 Agent 的检索结果，应视为潜在编造证据，选择 NEEDS_REVISION。\n"
+            "4. **文件摘要不是最终裁决**: 文档读取/摘要类结果只能证明“提取了什么文本或要点”，不能自动证明"
+            "其已经完成了专业业务判断。若用户问的是“是否符合政策/能否办理/该怎么处理”等结论性问题，"
+            "必须确认累积结果中已有合适能力来源对该结论作出判断。\n"
+            "5. **整体目标达成判定**: 只有在可靠性审查通过后，再判断累积结果是否满足用户问题的所有维度。"
+            "由于系统采用多轮迭代规划，之前的结果都在这个集合中；可信的全量结果集已满足需求时才判定 PASS。\n"
+            "6. **闲聊与直接对话**: 如果 Planner 判定这是一个通用问题且**未调度任何任务**（累积执行结果为空），"
             "请结合对话历史判断 Responder 是否可以直接回答。如果是，则判定为 PASS。\n"
-            "3. **查重熔断**: 如果你准备提出的修改意见与「历史评估反馈」高度重复，说明 Sub Agents 已达能力瓶颈，"
+            "7. **查重熔断**: 如果你准备提出的修改意见与「历史评估反馈」高度重复，说明 Sub Agents 已达能力瓶颈，"
             "此时**必须**选择 PARTIAL_ACCEPT。\n"
-            "4. **决策标准**:\n"
-            "   - PASS: 累积结果已完整解答了用户提问的所有维度，或者是无需 Sub Agents 的直接对话。\n"
+            "8. **决策标准**:\n"
+            "   - PASS: 结果可信，且已完整解答用户提问的所有维度；或者是无需 Sub Agents 的直接对话。\n"
             "   - PARTIAL_ACCEPT: 核心任务已完成，或由于能力限制无法通过简单修正获得更好结果。\n"
-            "   - NEEDS_REVISION: 存在实质性错误或遗漏，且修改建议与历史不重复。\n\n"
-            "5. **feedback 字段**: 仅在 NEEDS_REVISION 时填写具体的修改建议。PASS 和 PARTIAL_ACCEPT 时留空。\n"
-            "6. **人工仲裁判断**: 你必须填写 confidence、needs_human_arbitration 和 arbitration_reason。"
+            "   - NEEDS_REVISION: 存在实质性错误、遗漏、能力边界不匹配或证据不可靠，且修改建议与历史不重复。\n\n"
+            "9. **feedback 字段**: 仅在 NEEDS_REVISION 时填写具体修改建议。"
+            "反馈必须告诉 Planner 缺少哪类证据或应调度哪类能力，但不要自己编造答案。\n"
+            "10. **人工仲裁判断**: 你必须填写 confidence、needs_human_arbitration 和 arbitration_reason。"
             "仅当评估置信度低于 0.65，或你准备给出 NEEDS_REVISION 但反馈不够确定，或 Agent 结果冲突/接近熔断时，"
             "将 needs_human_arbitration 设为 true。普通高置信度 PASS 不需要人工仲裁。\n"
         )
