@@ -568,11 +568,6 @@ class HumanGateResumeRequest(BaseModel):
     message: str = Field(default="", description="用户确认文本或补充信息")
 
 
-class FinalEvalRequest(BaseModel):
-    session_id: str = Field(..., min_length=1, description="会话 ID")
-    action: str = Field(..., description="最终答案评价动作: accepted / revise / replan")
-    message: str = Field(default="", description="修改意见或重新规划原因")
-
 
 # ──────────────────────────────────────────────
 # API Endpoints
@@ -1281,27 +1276,6 @@ async def chat_resume(request: HumanGateResumeRequest):
             content={"error": str(e), "session_id": session_id},
         )
 
-
-@app.post("/chat-final-eval")
-async def chat_final_eval(request: FinalEvalRequest):
-    """Record or convert final-answer human evaluation into a follow-up instruction."""
-    action = request.action.strip().lower()
-    if action not in {"accepted", "revise", "replan"}:
-        return JSONResponse(status_code=400, content={"error": "invalid final evaluation action"})
-    if action == "accepted":
-        logger.info("[FinalEval] accepted session=%s", request.session_id)
-        return {"status": "accepted", "session_id": request.session_id}
-
-    feedback = request.message.strip()
-    if not feedback:
-        return JSONResponse(status_code=400, content={"error": "message is required"})
-    prefix = "请根据这条人工评价修改上一条最终回答，不需要重新调用工具或 Agent：" if action == "revise" else "请根据这条人工评价重新规划并必要时重新调用 Agent："
-    return {
-        "status": "follow_up_required",
-        "session_id": request.session_id,
-        "query": f"{prefix}{feedback}",
-        "mode": action,
-    }
 
 
 @app.post("/chat-resume-stream")
