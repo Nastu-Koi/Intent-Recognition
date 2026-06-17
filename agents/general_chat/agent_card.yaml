@@ -1,10 +1,10 @@
 # general_chat Agent Card
-# 通用对话 Agent — 内置图像识别与文档总结工具
+# 通用对话 Agent — 内置图像识别、文档总结与文档类 Skills
 
 metadata:
   agent_id: general_chat
   name: 通用对话助手
-  description: "通用对话助手，支持日常闲聊和问答。内置图像识别工具，可对用户上传的图片执行 OCR 文字提取、场景内容描述、发票/票据信息识别。内置文档总结工具，可对报告、合同等文档进行要点提炼和摘要生成。"
+  description: "通用对话助手，支持日常闲聊和问答。内置图像识别工具，可对用户上传的图片执行 OCR 文字提取、场景内容描述、发票/票据信息识别。内置文档总结工具，可对报告、合同等文档进行要点提炼和摘要生成。支持作为 pdf、docx、xlsx、pptx 文档类 Skill 的默认执行 Agent。"
   version: "1.0.0"
   category: "general"
   author: "System"
@@ -16,18 +16,50 @@ capabilities:
     - ocr
     - invoice_recognition
     - document_summary
+    - pdf
+    - docx
+    - xlsx
+    - pptx
   keywords:
     - 对话
     - 图片识别
     - OCR
     - 发票识别
     - 文档总结
+    - PDF
+    - pdf
+    - Word
+    - DOCX
+    - docx
+    - Excel
+    - XLSX
+    - xlsx
+    - PPTX
+    - pptx
+    - PowerPoint
+    - 演示文稿
+    - 幻灯片
+    - 表格
+    - 电子表格
   intent_patterns:
     - general_chat
     - 识别图片
     - OCR
     - 发票识别
     - 总结文档
+    - pdf
+    - PDF
+    - docx
+    - DOCX
+    - xlsx
+    - XLSX
+    - pptx
+    - PPTX
+    - 处理PDF
+    - 处理Word文档
+    - 处理Excel表格
+    - 处理PPT
+    - 处理演示文稿
   confidence_threshold: 0.5
   priority: 50
 
@@ -56,6 +88,10 @@ scope:
   - 发票/票据识别
   - 文档总结与要点提炼
   - 报告、合同等文档格式分析
+  - PDF 文件读取、摘要、分析与水印处理
+  - Word/DOCX 文档读取、摘要、分析与处理
+  - Excel/XLSX 表格读取、摘要、分析与处理
+  - PowerPoint/PPTX 演示文稿读取、摘要、分析与处理
 
 examples:
   - 你好，有什么可以帮你的吗
@@ -64,3 +100,7 @@ examples:
   - 帮我总结这份合同的关键条款
   - 这份季度报告的核心内容是什么
   - 分析一下这张图片的内容
+  - 帮我处理这个 PDF 文件
+  - 帮我总结这个 Word 文档
+  - 帮我分析这个 Excel 表格
+  - 帮我看一下这个 PPT 讲了什么
