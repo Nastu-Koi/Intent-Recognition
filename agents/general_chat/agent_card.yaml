@@ -18,6 +18,7 @@ capabilities:
     - document_summary
     - docx_create
     - pptx_create
+    - xlsx_create
     - pdf
     - docx
     - xlsx
@@ -64,6 +65,12 @@ capabilities:
     - 输出DOCX
     - 生成DOCX
     - 处理Excel表格
+    - 创建Excel表格
+    - 生成Excel表格
+    - 输出XLSX
+    - 生成XLSX
+    - 创建电子表格
+    - 生成电子表格
     - 处理PPT
     - 创建PPT
     - 生成PPT
@@ -92,6 +99,7 @@ dependencies:
     - langchain_openai
     - python-docx
     - python-pptx
+    - openpyxl
   external_services:
     - dify_api
     - llm_api
@@ -104,7 +112,7 @@ scope:
   - 报告、合同等文档格式分析
   - PDF 文件读取、摘要、分析与水印处理
   - Word/DOCX 文档读取、摘要、分析、创建与处理
-  - Excel/XLSX 表格读取、摘要、分析与处理
+  - Excel/XLSX 表格读取、摘要、分析、创建与处理
   - PowerPoint/PPTX 演示文稿读取、摘要、分析、创建与处理
 
 examples:
@@ -117,5 +125,6 @@ examples:
   - 帮我处理这个 PDF 文件
   - 帮我总结这个 Word 文档
   - 帮我分析这个 Excel 表格
+  - 帮我生成一个销售数据 Excel 表
   - 帮我看一下这个 PPT 讲了什么
   - 帮我生成一份项目汇报 PPT

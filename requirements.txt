@@ -29,6 +29,7 @@ pypdf>=4.0.0                     # PDF 读写、合并、水印等
 reportlab>=4.0.0                 # 创建 PDF 页面与水印 overlay
 python-docx>=1.1.0               # 创建 Word/DOCX 文档
 python-pptx>=1.0.0               # 创建 PowerPoint/PPTX 演示文稿
+openpyxl>=3.1.0                  # 创建 Excel/XLSX 工作簿
 
 # ─── 数据 & 配置 ───
 pydantic>=2.0.0

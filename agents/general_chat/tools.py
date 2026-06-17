@@ -9,10 +9,11 @@ General Chat 工具集 — 图像识别与文档总结。
   2. document_summary   — 文档总结 / 要点提炼
 """
 
+import csv
 import os
 import re
 import time
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import List
 
@@ -324,6 +325,32 @@ def _parse_slide_sections(content: str) -> List[dict]:
             current["bullets"].append(line)
 
     return slides
+
+
+def _parse_table_content(content: str) -> List[List[str]]:
+    text = (content or "").strip()
+    if not text:
+        return []
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return []
+
+    if any("|" in line for line in lines):
+        rows = []
+        for line in lines:
+            if re.fullmatch(r"[|:\-\s]+", line):
+                continue
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            if cells:
+                rows.append(cells)
+        return rows
+
+    try:
+        delimiter = "\t" if any("\t" in line for line in lines) else ","
+        return [[cell.strip() for cell in row] for row in csv.reader(StringIO(text), delimiter=delimiter) if row]
+    except csv.Error:
+        return [[line] for line in lines]
 
 
 @tool
@@ -693,5 +720,92 @@ def pptx_create(
         return f"PPTX 演示文稿生成失败: {e}"
 
 
+@tool
+def xlsx_create(
+    content: str,
+    title: str = "Sheet1",
+    output_filename: str = "",
+) -> str:
+    """根据用户提供的表格内容创建 Excel XLSX 文件，并返回生成文件路径。
+
+    Args:
+        content: 表格内容，支持 Markdown 表格、CSV 或 TSV 文本；首行会作为表头
+        title: 工作表名称，可为空
+        output_filename: 输出文件名，必须以 .xlsx 结尾；可为空自动生成
+    """
+    logger.info(
+        "[Tool:xlsx_create] title=%s | output=%s | content_len=%s",
+        title[:100],
+        output_filename,
+        len(content or ""),
+    )
+
+    rows = _parse_table_content(content)
+    if not rows:
+        return "错误: 生成 Excel 文件需要提供表格内容。"
+
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except ImportError as e:
+        return (
+            "XLSX 生成工具缺少依赖，请先安装 openpyxl："
+            "pip install openpyxl。"
+            f"具体错误: {e}"
+        )
+
+    try:
+        upload_dir = _get_upload_dir()
+        output_name = _safe_output_filename(output_filename, "generated_spreadsheet", ".xlsx")
+        output_path = upload_dir / output_name
+        if output_path.exists():
+            output_path = upload_dir / f"{output_path.stem}_{int(time.time())}.xlsx"
+            output_name = output_path.name
+
+        wb = Workbook()
+        ws = wb.active
+        sheet_name = re.sub(r"[\\/*?:\[\]]", "_", (title or "Sheet1").strip())[:31] or "Sheet1"
+        ws.title = sheet_name
+
+        max_columns = max(len(row) for row in rows)
+        for row in rows:
+            row.extend([""] * (max_columns - len(row)))
+            ws.append(row)
+
+        header_fill = PatternFill("solid", fgColor="1F4E78")
+        header_font = Font(color="FFFFFF", bold=True)
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+        for column_cells in ws.columns:
+            max_length = max(len(str(cell.value or "")) for cell in column_cells)
+            width = min(max(max_length + 2, 10), 45)
+            ws.column_dimensions[get_column_letter(column_cells[0].column)].width = width
+            for cell in column_cells:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+        wb.save(output_path)
+        return (
+            "已成功生成 Excel 工作簿。\n"
+            f"输出文件: {output_path}\n"
+            f"下载链接: /uploads/{output_name}"
+        )
+    except Exception as e:
+        logger.error(f"[Tool:xlsx_create] 执行失败: {e}", exc_info=True)
+        return f"Excel 文件生成失败: {e}"
+
+
 # 导出工具列表
-GENERAL_CHAT_TOOLS = [image_recognition, document_summary, pdf_add_watermark, docx_create, pptx_create]
+GENERAL_CHAT_TOOLS = [
+    image_recognition,
+    document_summary,
+    pdf_add_watermark,
+    docx_create,
+    pptx_create,
+    xlsx_create,
+]
