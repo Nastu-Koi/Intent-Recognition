@@ -311,7 +311,8 @@ class GeneralChatAgent(SubAgent):
             "2. 使用 `image_recognition` 工具识别和分析图片（支持 OCR、发票识别、场景分析）\n"
             "3. 使用 `document_summary` 工具总结和分析文档\n"
             "4. 使用 `pdf_add_watermark` 工具给 PDF 添加文本水印并生成新文件\n"
-            "5. 使用 `docx_create` 工具创建 Word/DOCX 文档并生成可下载文件\n\n"
+            "5. 使用 `docx_create` 工具创建 Word/DOCX 文档并生成可下载文件\n"
+            "6. 使用 `pptx_create` 工具创建 PowerPoint/PPTX 演示文稿并生成可下载文件\n\n"
             f"{skill_prompt}"
 
             "### 工具使用规则:\n"
@@ -319,6 +320,7 @@ class GeneralChatAgent(SubAgent):
             "- 当用户提供了文档文件且需要总结/分析时，调用 `document_summary` 工具\n"
             "- 当用户要求给 PDF 添加水印时，必须调用 `pdf_add_watermark` 工具，不要只提供操作建议\n"
             "- 当用户要求创建、生成、输出 Word/DOCX 文档时，必须先整理正文内容，再调用 `docx_create` 工具，不要声称自己无法生成 Word 文件\n"
+            "- 当用户要求创建、生成、输出 PPT/PPTX/PowerPoint/演示文稿时，必须先整理每页标题和要点，再调用 `pptx_create` 工具，不要声称自己无法生成 PPT 文件\n"
             "- 工具的 `file_path` 参数必须使用下面「可用文件」中列出的完整路径\n"
             "- 如果是普通聊天或无需文件处理的问题，直接回复即可，不需要调用任何工具\n\n"
 

@@ -17,6 +17,7 @@ capabilities:
     - invoice_recognition
     - document_summary
     - docx_create
+    - pptx_create
     - pdf
     - docx
     - xlsx
@@ -64,6 +65,12 @@ capabilities:
     - 生成DOCX
     - 处理Excel表格
     - 处理PPT
+    - 创建PPT
+    - 生成PPT
+    - 输出PPTX
+    - 生成PPTX
+    - 创建演示文稿
+    - 生成演示文稿
     - 处理演示文稿
   confidence_threshold: 0.5
   priority: 50
@@ -84,6 +91,7 @@ dependencies:
     - requests
     - langchain_openai
     - python-docx
+    - python-pptx
   external_services:
     - dify_api
     - llm_api
@@ -97,7 +105,7 @@ scope:
   - PDF 文件读取、摘要、分析与水印处理
   - Word/DOCX 文档读取、摘要、分析、创建与处理
   - Excel/XLSX 表格读取、摘要、分析与处理
-  - PowerPoint/PPTX 演示文稿读取、摘要、分析与处理
+  - PowerPoint/PPTX 演示文稿读取、摘要、分析、创建与处理
 
 examples:
   - 你好，有什么可以帮你的吗
@@ -110,3 +118,4 @@ examples:
   - 帮我总结这个 Word 文档
   - 帮我分析这个 Excel 表格
   - 帮我看一下这个 PPT 讲了什么
+  - 帮我生成一份项目汇报 PPT

@@ -19,6 +19,8 @@ from typing import List
 import requests
 from langchain_core.tools import tool
 
+EMU_PER_INCH = 914400
+
 from engine.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -290,6 +292,40 @@ def _safe_output_filename(filename: str, default_stem: str, suffix: str) -> str:
     return f"{stem or default_stem}{suffix}"
 
 
+def _get_upload_dir() -> Path:
+    upload_dir = Path(__file__).resolve().parents[2] / "uploads"
+    upload_dir.mkdir(exist_ok=True)
+    return upload_dir
+
+
+def _parse_slide_sections(content: str) -> List[dict]:
+    slides = []
+    current = None
+    for raw_line in (content or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if line.startswith("#"):
+            title = line.lstrip("#").strip()
+            if title:
+                current = {"title": title, "bullets": []}
+                slides.append(current)
+            continue
+
+        if current is None:
+            current = {"title": line, "bullets": []}
+            slides.append(current)
+        elif line.startswith(("- ", "* ")):
+            current["bullets"].append(line[2:].strip())
+        elif re.match(r"^\d+[\.)]\s+", line):
+            current["bullets"].append(re.sub(r"^\d+[\.)]\s+", "", line).strip())
+        else:
+            current["bullets"].append(line)
+
+    return slides
+
+
 @tool
 def image_recognition(file_path: str, instruction: str = "请描述这张图片的内容") -> str:
     """识别和分析图片内容。支持 OCR 文字识别、发票识别、场景分析、图片内容描述等视觉任务。
@@ -504,9 +540,7 @@ def docx_create(
         )
 
     try:
-        project_root = Path(__file__).resolve().parents[2]
-        upload_dir = project_root / "uploads"
-        upload_dir.mkdir(exist_ok=True)
+        upload_dir = _get_upload_dir()
 
         output_name = _safe_output_filename(output_filename, "generated_document", ".docx")
         output_path = upload_dir / output_name
@@ -550,5 +584,114 @@ def docx_create(
         return f"Word 文档生成失败: {e}"
 
 
+@tool
+def pptx_create(
+    content: str,
+    title: str = "",
+    output_filename: str = "",
+) -> str:
+    """根据用户提供的内容创建 PowerPoint PPTX 演示文稿，并返回生成文件路径。
+
+    Args:
+        content: 幻灯片内容，建议用 Markdown 标题分隔每页，并用项目符号描述要点
+        title: 演示文稿标题，可为空
+        output_filename: 输出文件名，必须以 .pptx 结尾；可为空自动生成
+    """
+    logger.info(
+        "[Tool:pptx_create] title=%s | output=%s | content_len=%s",
+        title[:100],
+        output_filename,
+        len(content or ""),
+    )
+
+    if not content or not content.strip():
+        return "错误: 生成 PPTX 演示文稿需要提供幻灯片内容。"
+
+    try:
+        from pptx import Presentation
+        from pptx.dml.color import RGBColor
+        from pptx.enum.text import PP_ALIGN
+        from pptx.util import Inches, Pt
+    except ImportError as e:
+        return (
+            "PPTX 生成工具缺少依赖，请先安装 python-pptx："
+            "pip install python-pptx。"
+            f"具体错误: {e}"
+        )
+
+    try:
+        upload_dir = _get_upload_dir()
+        output_name = _safe_output_filename(output_filename, "generated_presentation", ".pptx")
+        output_path = upload_dir / output_name
+        if output_path.exists():
+            output_path = upload_dir / f"{output_path.stem}_{int(time.time())}.pptx"
+            output_name = output_path.name
+
+        slides_data = _parse_slide_sections(content)
+        clean_title = (title or "").strip()
+        if clean_title and (not slides_data or slides_data[0]["title"] != clean_title):
+            slides_data.insert(0, {"title": clean_title, "bullets": []})
+        if not slides_data:
+            slides_data = [{"title": clean_title or "Presentation", "bullets": [content.strip()]}]
+
+        prs = Presentation()
+        blank_layout = prs.slide_layouts[6]
+        prs.core_properties.title = clean_title or slides_data[0]["title"]
+
+        for index, slide_data in enumerate(slides_data[:30]):
+            slide = prs.slides.add_slide(blank_layout)
+            background = slide.background.fill
+            background.solid()
+            background.fore_color.rgb = RGBColor(248, 250, 252)
+
+            title_box = slide.shapes.add_textbox(Inches(0.65), Inches(0.45), Inches(8.7), Inches(0.9))
+            title_frame = title_box.text_frame
+            title_frame.clear()
+            title_para = title_frame.paragraphs[0]
+            title_para.text = slide_data["title"]
+            title_para.font.bold = True
+            title_para.font.size = Pt(30 if index else 36)
+            title_para.alignment = PP_ALIGN.CENTER if index == 0 else PP_ALIGN.LEFT
+
+            bullets = slide_data.get("bullets") or []
+            if bullets:
+                body_box = slide.shapes.add_textbox(Inches(0.9), Inches(1.55), Inches(8.1), Inches(4.6))
+                body_frame = body_box.text_frame
+                body_frame.clear()
+                body_frame.word_wrap = True
+                for bullet_index, bullet in enumerate(bullets[:8]):
+                    para = body_frame.paragraphs[0] if bullet_index == 0 else body_frame.add_paragraph()
+                    para.text = bullet
+                    para.level = 0
+                    para.font.size = Pt(20)
+                    para.space_after = Pt(8)
+            elif index == 0:
+                subtitle_box = slide.shapes.add_textbox(Inches(1.2), Inches(2.4), Inches(7.6), Inches(1.0))
+                subtitle_frame = subtitle_box.text_frame
+                subtitle_frame.clear()
+                subtitle = subtitle_frame.paragraphs[0]
+                subtitle.text = "Generated presentation"
+                subtitle.font.size = Pt(18)
+                subtitle.alignment = PP_ALIGN.CENTER
+
+            footer_box = slide.shapes.add_textbox(Inches(8.75), Inches(6.85), Inches(0.8), Inches(0.25))
+            footer_frame = footer_box.text_frame
+            footer_frame.clear()
+            footer = footer_frame.paragraphs[0]
+            footer.text = str(index + 1)
+            footer.font.size = Pt(9)
+            footer.alignment = PP_ALIGN.RIGHT
+
+        prs.save(output_path)
+        return (
+            "已成功生成 PowerPoint 演示文稿。\n"
+            f"输出文件: {output_path}\n"
+            f"下载链接: /uploads/{output_name}"
+        )
+    except Exception as e:
+        logger.error(f"[Tool:pptx_create] 执行失败: {e}", exc_info=True)
+        return f"PPTX 演示文稿生成失败: {e}"
+
+
 # 导出工具列表
-GENERAL_CHAT_TOOLS = [image_recognition, document_summary, pdf_add_watermark, docx_create]
+GENERAL_CHAT_TOOLS = [image_recognition, document_summary, pdf_add_watermark, docx_create, pptx_create]
