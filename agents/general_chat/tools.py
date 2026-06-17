@@ -10,6 +10,7 @@ General Chat 工具集 — 图像识别与文档总结。
 """
 
 import os
+import re
 import time
 from io import BytesIO
 from pathlib import Path
@@ -276,7 +277,17 @@ def _call_dify_doc_summary(
 # 支持的图片扩展名
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 # 支持的文档扩展名
-_DOCUMENT_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt", ".md", ".csv"}
+_DOCUMENT_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".md", ".csv"}
+
+
+def _safe_output_filename(filename: str, default_stem: str, suffix: str) -> str:
+    name = Path(filename or "").name.strip()
+    if not name:
+        name = f"{default_stem}_{int(time.time())}{suffix}"
+    if Path(name).suffix.lower() != suffix:
+        name = f"{Path(name).stem or default_stem}{suffix}"
+    stem = re.sub(r"[^\w\-.一-鿿]+", "_", Path(name).stem, flags=re.UNICODE).strip("._")
+    return f"{stem or default_stem}{suffix}"
 
 
 @tool
@@ -459,5 +470,85 @@ def pdf_add_watermark(
         return f"PDF 加水印失败: {e}"
 
 
+@tool
+def docx_create(
+    content: str,
+    title: str = "",
+    output_filename: str = "",
+) -> str:
+    """根据用户提供的内容创建 Word DOCX 文档，并返回生成文件路径。
+
+    Args:
+        content: 要写入 Word 文档的正文内容，支持用 Markdown 风格标题和项目符号表达结构
+        title: 文档标题，可为空
+        output_filename: 输出文件名，必须以 .docx 结尾；可为空自动生成
+    """
+    logger.info(
+        "[Tool:docx_create] title=%s | output=%s | content_len=%s",
+        title[:100],
+        output_filename,
+        len(content or ""),
+    )
+
+    if not content or not content.strip():
+        return "错误: 生成 Word 文档需要提供正文内容。"
+
+    try:
+        from docx import Document
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+    except ImportError as e:
+        return (
+            "DOCX 生成工具缺少依赖，请先安装 python-docx："
+            "pip install python-docx。"
+            f"具体错误: {e}"
+        )
+
+    try:
+        project_root = Path(__file__).resolve().parents[2]
+        upload_dir = project_root / "uploads"
+        upload_dir.mkdir(exist_ok=True)
+
+        output_name = _safe_output_filename(output_filename, "generated_document", ".docx")
+        output_path = upload_dir / output_name
+        if output_path.exists():
+            output_path = upload_dir / f"{output_path.stem}_{int(time.time())}.docx"
+            output_name = output_path.name
+
+        document = Document()
+        clean_title = (title or "").strip()
+        if clean_title:
+            heading = document.add_heading(clean_title, level=0)
+            heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
+            if not line:
+                document.add_paragraph()
+                continue
+
+            if line.startswith("### "):
+                document.add_heading(line[4:].strip(), level=3)
+            elif line.startswith("## "):
+                document.add_heading(line[3:].strip(), level=2)
+            elif line.startswith("# "):
+                document.add_heading(line[2:].strip(), level=1)
+            elif line.startswith(("- ", "* ")):
+                document.add_paragraph(line[2:].strip(), style="List Bullet")
+            elif re.match(r"^\d+[\.)]\s+", line):
+                document.add_paragraph(re.sub(r"^\d+[\.)]\s+", "", line).strip(), style="List Number")
+            else:
+                document.add_paragraph(line)
+
+        document.save(output_path)
+        return (
+            "已成功生成 Word 文档。\n"
+            f"输出文件: {output_path}\n"
+            f"下载链接: /uploads/{output_name}"
+        )
+    except Exception as e:
+        logger.error(f"[Tool:docx_create] 执行失败: {e}", exc_info=True)
+        return f"Word 文档生成失败: {e}"
+
+
 # 导出工具列表
-GENERAL_CHAT_TOOLS = [image_recognition, document_summary, pdf_add_watermark]
+GENERAL_CHAT_TOOLS = [image_recognition, document_summary, pdf_add_watermark, docx_create]

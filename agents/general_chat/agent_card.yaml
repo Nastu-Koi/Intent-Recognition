@@ -16,6 +16,7 @@ capabilities:
     - ocr
     - invoice_recognition
     - document_summary
+    - docx_create
     - pdf
     - docx
     - xlsx
@@ -57,6 +58,10 @@ capabilities:
     - PPTX
     - 处理PDF
     - 处理Word文档
+    - 创建Word文档
+    - 生成Word文档
+    - 输出DOCX
+    - 生成DOCX
     - 处理Excel表格
     - 处理PPT
     - 处理演示文稿
@@ -78,6 +83,7 @@ dependencies:
   python_packages:
     - requests
     - langchain_openai
+    - python-docx
   external_services:
     - dify_api
     - llm_api
@@ -89,7 +95,7 @@ scope:
   - 文档总结与要点提炼
   - 报告、合同等文档格式分析
   - PDF 文件读取、摘要、分析与水印处理
-  - Word/DOCX 文档读取、摘要、分析与处理
+  - Word/DOCX 文档读取、摘要、分析、创建与处理
   - Excel/XLSX 表格读取、摘要、分析与处理
   - PowerPoint/PPTX 演示文稿读取、摘要、分析与处理
 
